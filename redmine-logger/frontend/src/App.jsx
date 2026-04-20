@@ -45,10 +45,16 @@ export default function App() {
     branch: "",
     fromDate: "",
     toDate: "",
+    redmineUrl: "",
+    redmineApiKey: "",
   });
   const [github, setGithub] = useState(() => {
     const saved = localStorage.getItem("github_config");
     return saved ? JSON.parse(saved) : { connected: false, username: "", token: "", user: null };
+  });
+  const [redmine, setRedmine] = useState(() => {
+    const saved = localStorage.getItem("redmine_config");
+    return saved ? JSON.parse(saved) : { connected: false, url: "", apiKey: "", user: null };
   });
   const [rows, setRows] = useState([]);
   const [status, setStatus] = useState({ text: "Ready.", error: false, loading: false });
@@ -61,6 +67,14 @@ export default function App() {
       localStorage.removeItem("github_config");
     }
   }, [github]);
+
+  useEffect(() => {
+    if (redmine.connected) {
+      localStorage.setItem("redmine_config", JSON.stringify(redmine));
+    } else {
+      localStorage.removeItem("redmine_config");
+    }
+  }, [redmine]);
 
   useEffect(() => {
     async function loadDefaults() {
@@ -141,9 +155,47 @@ export default function App() {
     }
   }
 
+  async function handleRedmineConnect() {
+    if (!form.redmineApiKey) {
+      setMessage("Redmine API Key is required.", true);
+      return;
+    }
+
+    setMessage("Connecting to Redmine...", false, true);
+    try {
+      const res = await fetch(`${API_BASE}/api/redmine/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: form.redmineApiKey.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.error || "Redmine connection failed.", true);
+        return;
+      }
+
+      setRedmine({
+        connected: true,
+        url: form.redmineUrl.trim(),
+        apiKey: form.redmineApiKey.trim(),
+        user: data.user,
+      });
+      setMessage(`Connected to Redmine as ${data.user.firstname} ${data.user.lastname}.`);
+    } catch (error) {
+      setMessage(error.message || "Could not connect to Redmine.", true);
+    }
+  }
+
   function handleDisconnect() {
     setGithub({ connected: false, username: "", token: "", user: null });
     setMessage("Disconnected from GitHub.");
+  }
+
+  function handleRedmineDisconnect() {
+    setRedmine({ connected: false, url: "", apiKey: "", user: null });
+    setMessage("Disconnected from Redmine.");
   }
 
   async function handleImport() {
@@ -256,7 +308,10 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/redmine/upload`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          redmineUrl: redmine.url,
+          redmineApiKey: redmine.apiKey
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -364,117 +419,120 @@ export default function App() {
       </header>
 
       <div className="layout-content">
-        {!github.connected ? (
-          <motion.section
-            className="card highlight"
-            variants={cardVariants}
-            initial="hidden"
-            animate="visible"
-          >
-            <h2><Github size={24} color="#60a5fa" /> Connect to GitHub</h2>
-            <p className="muted">Authorize with your Personal Access Token (classic) to sync your development activity.</p>
-            <div className="grid">
-              <label>
-                Username
-                <input
-                  value={form.username}
-                  onChange={(e) => setField("username", e.target.value)}
-                  placeholder="github-username"
-                />
-              </label>
-              <label>
-                Personal Access Token
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "20px", marginBottom: "20px" }}>
+          {!github.connected ? (
+            <motion.section className="card highlight" variants={cardVariants} initial="hidden" animate="visible">
+              <h2><Github size={24} color="#60a5fa" /> GitHub</h2>
+              <p className="muted" style={{ fontSize: "14px", marginBottom: "15px" }}>Connect your account to sync development activity.</p>
+              <div className="grid">
+                <input value={form.username} onChange={(e) => setField("username", e.target.value)} placeholder="Username" />
+                <input type="password" value={form.token} onChange={(e) => setField("token", e.target.value)} placeholder="Access Token" />
+              </div>
+              <div className="actions">
+                <button className="primary" onClick={handleConnect}><CheckCircle2 size={18} /> Connect</button>
+              </div>
+            </motion.section>
+          ) : (
+            <motion.section className="card" variants={cardVariants} initial="hidden" animate="visible">
+              <div className="card-header">
+                <h2><Github size={24} color="#60a5fa" /> GitHub Active</h2>
+                <div className="user-badge solo">
+                  {github.user?.avatar_url && <img src={github.user.avatar_url} alt="avatar" />}
+                  <span>{github.user?.name || github.username}</span>
+                  <button className="text-btn" onClick={handleDisconnect}><LogOut size={14} /></button>
+                </div>
+              </div>
+            </motion.section>
+          )}
+
+          {!redmine.connected ? (
+            <motion.section
+              className="card highlight"
+              variants={cardVariants}
+              initial="hidden"
+              animate="visible"
+              style={{ borderLeft: "4px solid #10b981" }}
+            >
+              <h2><Upload size={24} color="#10b981" /> Redmine</h2>
+              <p className="muted" style={{ fontSize: "14px", marginBottom: "15px" }}>Access your Redmine account with your API Key.</p>
+              <div className="grid">
                 <input
                   type="password"
-                  value={form.token}
-                  onChange={(e) => setField("token", e.target.value)}
-                  placeholder="ghp_xxxxxxxxxxxx"
+                  value={form.redmineApiKey}
+                  onChange={(e) => setField("redmineApiKey", e.target.value)}
+                  placeholder="API Key"
                 />
-              </label>
-            </div>
-            <div className="actions">
-              <button className="primary" onClick={handleConnect}>
-                <CheckCircle2 size={18} /> Connect Account
-              </button>
-            </div>
-            <AnimatePresence>
-              {status.text && (
-                <motion.div
-                  className={`status ${status.error ? "error" : ""}`}
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                >
-                  {status.loading ? <Loader2 className="animate-spin" size={16} /> : status.error ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}
-                  {status.text}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.section>
-        ) : (
-          <motion.section
-            className="card"
-            variants={cardVariants}
-            initial="hidden"
-            animate="visible"
-          >
-            <div className="card-header">
-              <h2><Github size={24} color="#60a5fa" /> GitHub Workspace</h2>
-              <div className="user-badge">
-                {github.user?.avatar_url && <img src={github.user.avatar_url} alt="avatar" />}
-                <span>{github.user?.name || github.username}</span>
-                <button className="text-btn" onClick={handleDisconnect}><LogOut size={14} /> Disconnect</button>
               </div>
-            </div>
+              <div className="actions">
+                <button className="primary" style={{ background: "linear-gradient(135deg, #10b981 0%, #059669 100%)", boxShadow: "0 4px 15px rgba(16, 185, 129, 0.3)" }} onClick={handleRedmineConnect}>
+                  <CheckCircle2 size={18} /> Connect
+                </button>
+              </div>
+            </motion.section>
+          ) : (
+            <motion.section className="card" variants={cardVariants} initial="hidden" animate="visible" style={{ borderLeft: "4px solid #10b981" }}>
+              <div className="card-header">
+                <h2><Upload size={24} color="#10b981" /> Redmine Active</h2>
+                <div className="user-badge solo">
+                  <div className="avatar-placeholder" style={{ background: "#10b981" }}>{redmine.user?.firstname?.[0]}</div>
+                  <span>{redmine.user?.firstname} {redmine.user?.lastname}</span>
+                  <button className="text-btn" onClick={handleRedmineDisconnect}><LogOut size={14} /></button>
+                </div>
+              </div>
+              <p className="success-text" style={{ color: "#10b981" }}><CheckCircle2 size={14} /> Account Connected.</p>
+            </motion.section>
+          )}
+        </div>
+
+        {github.connected && redmine.connected && (
+          <motion.section className="card" variants={cardVariants} initial="hidden" animate="visible">
+            <h2><Layout size={24} color="#60a5fa" /> Sync Workspace</h2>
             <div className="grid">
               <label className="span-2">
-                Repository
-                <input
-                  value={form.repository}
-                  onChange={(e) => setField("repository", e.target.value)}
-                  placeholder="owner/repo (optional for all repos)"
-                />
+                Repository <input value={form.repository} onChange={(e) => setField("repository", e.target.value)} placeholder="owner/repo (optional)" />
               </label>
               <label>
-                Branch
-                <input value={form.branch} onChange={(e) => setField("branch", e.target.value)} placeholder="main" />
+                Branch <input value={form.branch} onChange={(e) => setField("branch", e.target.value)} placeholder="main" />
               </label>
               <label>
-                From
-                <input type="date" value={form.fromDate} onChange={(e) => setField("fromDate", e.target.value)} />
+                From <input type="date" value={form.fromDate} onChange={(e) => setField("fromDate", e.target.value)} />
               </label>
               <label>
-                Until
-                <input type="date" value={form.toDate} onChange={(e) => setField("toDate", e.target.value)} />
+                Until <input type="date" value={form.toDate} onChange={(e) => setField("toDate", e.target.value)} />
               </label>
             </div>
 
             <div className="actions">
               <button className="primary" onClick={handleImport}>
-                <RefreshCw size={18} className={status.loading ? "animate-spin" : ""} /> Import & Sync Commits
+                <RefreshCw size={18} className={status.loading ? "animate-spin" : ""} /> Import & Sync
               </button>
               <button onClick={() => setRows((prev) => [...prev, emptyRow()])}>
                 <Plus size={18} /> Add Manual Row
               </button>
-              <button className="success" onClick={handleUploadRedmine}>
-                <Upload size={18} /> Push to Redmine
-              </button>
-            </div>
-
-            <AnimatePresence>
-              {status.text && (
-                <motion.div
-                  className={`status ${status.error ? "error" : ""}`}
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                >
-                  {status.loading ? <Loader2 className="animate-spin" size={16} /> : status.error ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}
-                  {status.text}
-                </motion.div>
+              {redmine.connected && (
+                <button className="success" onClick={handleUploadRedmine}>
+                  <Upload size={18} /> Push to Redmine
+                </button>
               )}
-            </AnimatePresence>
+            </div>
           </motion.section>
         )}
+
+        <div className="status-bar">
+          <AnimatePresence>
+            {status.text && (
+              <motion.div
+                className={`status ${status.error ? "error" : ""}`}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+              >
+                {status.loading ? <Loader2 className="animate-spin" size={16} /> : status.error ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}
+                {status.text}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
         <motion.section
           className="card"
@@ -559,6 +617,43 @@ export default function App() {
       <style>{`
         .animate-spin { animation: spin 1s linear infinite; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        
+        .avatar-placeholder {
+          width: 24px;
+          height: 24px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: bold;
+          font-size: 12px;
+          color: white;
+        }
+
+        .success-text {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 13px;
+          font-weight: 500;
+          margin-top: 12px;
+        }
+
+        /* Premium Glow Effects */
+        .card.highlight {
+          position: relative;
+          overflow: hidden;
+        }
+        .card.highlight::after {
+          content: '';
+          position: absolute;
+          top: -150%;
+          left: -150%;
+          width: 300%;
+          height: 300%;
+          background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%);
+          pointer-events: none;
+        }
       `}</style>
     </motion.main>
   );

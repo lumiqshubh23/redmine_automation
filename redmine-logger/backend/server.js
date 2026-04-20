@@ -452,6 +452,33 @@ async function uploadTimeEntriesToRedmine({
   return result;
 }
 
+app.post("/api/redmine/validate", async (req, res) => {
+  const { apiKey } = req.body || {};
+  const url = req.body.url || REDMINE_URL;
+
+  if (!url || !apiKey) {
+    return res.status(400).json({ error: "Redmine API Key is required." });
+  }
+
+  try {
+    const response = await axios.get(`${url}/users/current.json`, {
+      headers: {
+        "X-Redmine-API-Key": apiKey,
+        "Accept": "application/json"
+      }
+    });
+
+    return res.json({
+      valid: true,
+      user: response.data.user
+    });
+  } catch (error) {
+    const status = error.response?.status || "";
+    const message = error.response?.data?.message || error.message || "Redmine validation failed";
+    return res.status(500).json({ error: status ? `Redmine ${status}: ${message}` : message });
+  }
+});
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -679,8 +706,8 @@ app.post("/api/redmine/upload", async (req, res) => {
 
     const result = await uploadTimeEntriesToRedmine({
       rows: data,
-      redmineUrl: REDMINE_URL,
-      apiKey: apiKey || REDMINE_API_KEY,
+      redmineUrl: req.body.redmineUrl || REDMINE_URL,
+      apiKey: req.body.redmineApiKey || apiKey || REDMINE_API_KEY,
       delayMs: Number(delayMs),
     });
 
