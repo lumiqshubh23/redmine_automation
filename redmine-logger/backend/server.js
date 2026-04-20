@@ -101,45 +101,134 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
     headers.Authorization = `Bearer ${token}`;
   }
 
+  const isGlobalSearch = !owner || !repo;
+
+  if (isGlobalSearch) {
+    const allCommits = [];
+    try {
+      const eventsRes = await axios.get(`https://api.github.com/users/${username}/events`, {
+        headers,
+        params: { per_page: 100 }
+      });
+
+      const pushEvents = (eventsRes.data || []).filter(e => e.type === "PushEvent");
+      const activeTargets = new Set();
+
+      for (const ev of pushEvents) {
+        if (!ev.repo || !ev.payload || !ev.payload.ref) continue;
+        const evRepoName = ev.repo.name;
+        const evBranch = ev.payload.ref.replace("refs/heads/", "");
+        activeTargets.add(`${evRepoName}|${evBranch}`);
+      }
+
+      for (const target of activeTargets) {
+        const [targetRepoFull, targetBranch] = target.split("|");
+        const [targetOwner, targetRepo] = targetRepoFull.split("/");
+
+        try {
+          const commits = await fetchCommits({
+            owner: targetOwner,
+            repo: targetRepo,
+            username,
+            token,
+            branch: targetBranch,
+            fromDate,
+            toDate
+          });
+          allCommits.push(...commits);
+        } catch (subErr) {
+          console.error(`Failed fetching for ${targetRepoFull}:${targetBranch}`, subErr.message);
+        }
+      }
+
+      const uniqueCommits = [];
+      const seenSha = new Set();
+      for (const c of allCommits) {
+        if (!seenSha.has(c.source_id)) {
+          seenSha.add(c.source_id);
+          uniqueCommits.push(c);
+        }
+      }
+
+      uniqueCommits.sort((a, b) => new Date(b.date) - new Date(a.date));
+      return uniqueCommits;
+
+    } catch (err) {
+      if (err.response?.status === 403 || err.response?.status === 404) {
+        throw new Error("Could not access user events. Check token scopes.");
+      }
+      throw err;
+    }
+  }
+
+  if (!branch) {
+    try {
+      let branchNames = [];
+      let bPage = 1;
+      while (true) {
+        const branchesRes = await axios.get(`https://api.github.com/repos/${owner}/${repo}/branches`, {
+          headers,
+          params: { per_page: 100, page: bPage }
+        });
+        const fetched = branchesRes.data || [];
+        if (fetched.length === 0) break;
+        branchNames.push(...fetched.map(b => b.name));
+        if (fetched.length < 100) break;
+        bPage++;
+      }
+
+      const allBranchCommits = [];
+      for (const bName of branchNames) {
+        try {
+          const commits = await fetchCommits({ owner, repo, username, token, branch: bName, fromDate, toDate });
+          allBranchCommits.push(...commits);
+        } catch (err) {
+          console.error(`Failed on branch ${bName}`);
+        }
+      }
+
+      const uniqueCommits = [];
+      const seenSha = new Set();
+      for (const c of allBranchCommits) {
+        if (!seenSha.has(c.source_id)) {
+          seenSha.add(c.source_id);
+          uniqueCommits.push(c);
+        }
+      }
+      uniqueCommits.sort((a, b) => new Date(b.date) - new Date(a.date));
+      return uniqueCommits;
+    } catch (err) {
+      // safe fallback below
+    }
+  }
+
   const allCommits = [];
   let page = 1;
-  const isGlobalSearch = !owner || !repo;
 
   try {
     while (true) {
-      let response;
-      if (isGlobalSearch) {
-        // GitHub Search API uses 'author-date' and search queries
-        // Max 1000 items (10 pages of 100). The `q` query string handles author and date range.
-        const q = `author:${username} author-date:${fromDate}..${toDate}`;
-        response = await axios.get(`https://api.github.com/search/commits`, {
-          headers: { ...headers, Accept: "application/vnd.github.cloak-preview+json" },
-          params: { q, per_page: 100, page },
-        });
-      } else {
-        response = await axios.get(`https://api.github.com/repos/${owner}/${repo}/commits`, {
-          headers,
-          params: {
-            author: username,
-            since,
-            until,
-            sha: branch || undefined,
-            per_page: 100,
-            page,
-          },
-        });
-      }
+      const response = await axios.get(`https://api.github.com/repos/${owner}/${repo}/commits`, {
+        headers,
+        params: {
+          author: username,
+          since,
+          until,
+          sha: branch || undefined,
+          per_page: 100,
+          page,
+        },
+      });
 
-      const commits = isGlobalSearch ? (response.data.items || []) : (response.data || []);
+      const commits = response.data || [];
       allCommits.push(...commits);
 
       if (commits.length < 100) break;
-      if (isGlobalSearch && page >= 10) break; // GitHub Search API limits pagination up to 1000 items
+      if (page >= 10) break;
 
       page += 1;
     }
   } catch (error) {
-    if (error.response?.status === 404 && !isGlobalSearch) {
+    if (error.response?.status === 404) {
       const scopes = error.response.headers["x-oauth-scopes"] || "";
       if (token && !scopes.includes("repo")) {
         throw new Error(
@@ -149,12 +238,6 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
       throw new Error(
         `GitHub Repository '${owner}/${repo}' not found. Please check the URL/owner or ensure you have access.`
       );
-    }
-    if (isGlobalSearch && error.response?.status === 403 && error.response?.data?.message?.includes('rate limit')) {
-      throw new Error(`GitHub Search API rate limit exceeded. Please try again later.`);
-    }
-    if (isGlobalSearch && error.response?.status === 422) {
-      throw new Error(`Validation failed for GitHub Search. Check parameters: ${error.response?.data?.message || ''}`);
     }
     throw error;
   }
@@ -395,11 +478,14 @@ app.post("/api/github/commits", async (req, res) => {
       toDate: normalizedTo,
     });
 
+    const commitNames = entries.map(e => e.comments.replace("GitHub: ", ""));
+
     return res.json({
       entries,
+      commits: commitNames,
       fromDate: normalizedFrom,
       toDate: normalizedTo,
-      total: entries.length,
+      total: entries.length
     });
   } catch (error) {
     const ghStatus = error.response?.status || "";

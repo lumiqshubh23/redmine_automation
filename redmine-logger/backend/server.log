@@ -1,0 +1,6 @@
+nohup: ignoring input
+API server running at http://localhost:5000
+(node:165516) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 error listeners added to [TLSSocket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:165516) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 error listeners added to [TLSSocket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+(node:165516) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 error listeners added to [TLSSocket]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
