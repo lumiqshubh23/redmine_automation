@@ -1,4 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Github,
+  Hash,
+  Calendar,
+  Clock,
+  FileText,
+  Save,
+  FileOutput,
+  Upload,
+  Trash2,
+  Plus,
+  Layout,
+  RefreshCw,
+  LogOut,
+  ChevronDown,
+  Download,
+  Eye,
+  CheckCircle2,
+  AlertCircle,
+  Loader2
+} from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 
@@ -9,6 +31,11 @@ const emptyRow = () => ({
   comments: "Manual task",
   source_id: "",
 });
+
+const cardVariants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: "easeOut" } }
+};
 
 export default function App() {
   const [form, setForm] = useState({
@@ -24,7 +51,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : { connected: false, username: "", token: "", user: null };
   });
   const [rows, setRows] = useState([]);
-  const [status, setStatus] = useState({ text: "Ready.", error: false });
+  const [status, setStatus] = useState({ text: "Ready.", error: false, loading: false });
   const [excelPreview, setExcelPreview] = useState(null);
 
   useEffect(() => {
@@ -34,8 +61,6 @@ export default function App() {
       localStorage.removeItem("github_config");
     }
   }, [github]);
-
-  const statusClass = useMemo(() => (status.error ? "status error" : "status"), [status.error]);
 
   useEffect(() => {
     async function loadDefaults() {
@@ -59,8 +84,8 @@ export default function App() {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  function setMessage(text, error = false) {
-    setStatus({ text, error });
+  function setMessage(text, error = false, loading = false) {
+    setStatus({ text, error, loading });
   }
 
   function mergeUniqueRows(existing, incoming) {
@@ -88,7 +113,7 @@ export default function App() {
       return;
     }
 
-    setMessage("Connecting to GitHub...");
+    setMessage("Connecting to GitHub...", false, true);
     try {
       const res = await fetch(`${API_BASE}/api/github/validate`, {
         method: "POST",
@@ -122,7 +147,7 @@ export default function App() {
   }
 
   async function handleImport() {
-    setMessage("Importing commits from GitHub...");
+    setMessage("Importing commits from GitHub...", false, true);
     try {
       const res = await fetch(`${API_BASE}/api/github/commits`, {
         method: "POST",
@@ -143,7 +168,7 @@ export default function App() {
       }
 
       setRows((prev) => mergeUniqueRows(prev, data.entries || []));
-      setMessage(`Imported ${data.total} commits from ${data.fromDate} to ${data.toDate}.`);
+      setMessage(`Imported ${data.total} commits.`);
     } catch (error) {
       setMessage(error.message || "GitHub import failed.", true);
     }
@@ -155,7 +180,7 @@ export default function App() {
       return;
     }
 
-    setMessage("Saving rows to Excel...");
+    setMessage("Saving rows to Excel...", false, true);
     try {
       const res = await fetch(`${API_BASE}/api/excel/save`, {
         method: "POST",
@@ -175,7 +200,7 @@ export default function App() {
   }
 
   async function handleGenerateExcel() {
-    setMessage("Generating timelog...");
+    setMessage("Generating timelog...", false, true);
     try {
       const res = await fetch(`${API_BASE}/api/excel/generate`, {
         method: "POST",
@@ -194,7 +219,7 @@ export default function App() {
   }
 
   async function handleUploadRedmine() {
-    setMessage("Uploading logs to Redmine...");
+    setMessage("Uploading logs to Redmine...", false, true);
     try {
       const res = await fetch(`${API_BASE}/api/redmine/upload`, {
         method: "POST",
@@ -213,7 +238,7 @@ export default function App() {
   }
 
   async function loadExcelPreview(which) {
-    setMessage(which === "timelog" ? "Loading timelog preview..." : "Loading input sheet preview...");
+    setMessage(which === "timelog" ? "Loading timelog preview..." : "Loading input sheet preview...", false, true);
     try {
       const res = await fetch(`${API_BASE}/api/excel/preview?which=${encodeURIComponent(which)}`);
       const data = await res.json();
@@ -223,25 +248,16 @@ export default function App() {
         return;
       }
       setExcelPreview(data);
-      setMessage(data.empty ? "Sheet is empty." : `Showing ${which === "timelog" ? "timelog" : "input"} sheet (${data.rows.length} rows).`);
+      setMessage(data.empty ? "Sheet is empty." : `Showing ${which} sheet.`);
     } catch (error) {
       setMessage(error.message || "Preview failed.", true);
       setExcelPreview(null);
     }
   }
 
-  function updatePreviewRow(index, key, value) {
-    setExcelPreview((prev) => {
-      if (!prev) return null;
-      const nextRows = [...prev.rows];
-      nextRows[index] = { ...nextRows[index], [key]: value };
-      return { ...prev, rows: nextRows };
-    });
-  }
-
   async function handleUpdateExcel() {
     if (!excelPreview || excelPreview.rows.length === 0) return;
-    setMessage(`Updating ${excelPreview.which} sheet...`);
+    setMessage(`Updating ${excelPreview.which} sheet...`, false, true);
     try {
       const res = await fetch(`${API_BASE}/api/excel/update`, {
         method: "POST",
@@ -260,7 +276,7 @@ export default function App() {
   }
 
   async function handleGenerateApu() {
-    setMessage("Generating APU Tracking Sheet...");
+    setMessage("Generating APU Tracking Sheet...", false, true);
     try {
       const res = await fetch(`${API_BASE}/api/excel/generate-apu`, {
         method: "POST",
@@ -272,7 +288,7 @@ export default function App() {
         setMessage(data.error || "APU generation failed.", true);
         return;
       }
-      setMessage(`${data.message} (${data.rows} rows). Ready to download.`);
+      setMessage(`${data.message}. Ready to download.`);
     } catch (error) {
       setMessage(error.message || "APU generation failed.", true);
     }
@@ -291,209 +307,302 @@ export default function App() {
   }
 
   return (
-    <main className="container">
-      <section className="hero">
-        <h1>GitHub Commit to Excel Logger</h1>
-        <p>Import your commits, add task rows, then save to Excel.</p>
-      </section>
+    <motion.main
+      className="container"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.8 }}
+    >
+      <header className="hero">
+        <motion.h1
+          initial={{ y: -50, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.2 }}
+        >
+          APU Log Automator
+        </motion.h1>
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.4 }}
+        >
+          Effortlessly sync GitHub commits to your APU tracking sheets and Redmine logs.
+        </motion.p>
+      </header>
 
-      {!github.connected ? (
-        <section className="card highlight">
-          <h2>Connect to GitHub</h2>
-          <p className="muted">Enter your GitHub credentials to start syncing tasks. Your token is stored locally in your browser.</p>
-          <div className="grid">
-            <label>
-              GitHub Username
-              <input
-                value={form.username}
-                onChange={(e) => setField("username", e.target.value)}
-                placeholder="your-github-login"
-              />
-            </label>
-            <label>
-              Personal Access Token
-              <input
-                type="password"
-                value={form.token}
-                onChange={(e) => setField("token", e.target.value)}
-                placeholder="ghp_xxxxxxxxxxxx"
-              />
-            </label>
-          </div>
-          <div className="actions">
-            <button className="primary" onClick={handleConnect}>Connect GitHub Account</button>
-          </div>
-          <p className={statusClass}>{status.text}</p>
-        </section>
-      ) : (
-        <section className="card">
-          <div className="card-header">
-            <h2>GitHub Sync</h2>
-            <div className="user-badge">
-              {github.user?.avatar_url && <img src={github.user.avatar_url} alt="avatar" />}
-              <span>{github.user?.name || github.username}</span>
-              <button className="text-btn" onClick={handleDisconnect}>Disconnect</button>
+      <div className="layout-content">
+        {!github.connected ? (
+          <motion.section
+            className="card highlight"
+            variants={cardVariants}
+            initial="hidden"
+            animate="visible"
+          >
+            <h2><Github size={24} color="#60a5fa" /> Connect to GitHub</h2>
+            <p className="muted">Authorize with your Personal Access Token (classic) to sync your development activity.</p>
+            <div className="grid">
+              <label>
+                Username
+                <input
+                  value={form.username}
+                  onChange={(e) => setField("username", e.target.value)}
+                  placeholder="github-username"
+                />
+              </label>
+              <label>
+                Personal Access Token
+                <input
+                  type="password"
+                  value={form.token}
+                  onChange={(e) => setField("token", e.target.value)}
+                  placeholder="ghp_xxxxxxxxxxxx"
+                />
+              </label>
             </div>
-          </div>
-          <div className="grid">
-            <label className="span-2">
-              Repository (optional, leave blank for all repos)
-              <input
-                value={form.repository}
-                onChange={(e) => setField("repository", e.target.value)}
-                placeholder="URL or owner/repo (optional)"
-              />
-            </label>
-            <label>
-              Branch (optional)
-              <input value={form.branch} onChange={(e) => setField("branch", e.target.value)} placeholder="main" />
-            </label>
-            <label>
-              From Date
-              <input type="date" value={form.fromDate} onChange={(e) => setField("fromDate", e.target.value)} />
-            </label>
-            <label>
-              To Date
-              <input type="date" value={form.toDate} onChange={(e) => setField("toDate", e.target.value)} />
-            </label>
-          </div>
-
-          <div className="actions">
-            <button className="primary" type="button" onClick={handleImport}>
-              Import GitHub Commits
-            </button>
-            <button type="button" onClick={() => setRows((prev) => [...prev, emptyRow()])}>
-              Add Task
-            </button>
-            <button className="success" type="button" onClick={handleSave}>
-              Save to Excel
-            </button>
-            <button type="button" onClick={handleGenerateExcel}>
-              Generate Excel
-            </button>
-            <button className="success" type="button" onClick={handleUploadRedmine}>
-              Upload to Redmine
-            </button>
-          </div>
-          <p className={statusClass}>{status.text}</p>
-        </section>
-      )}
-
-      <section className="card">
-        <h2>View Excel in Browser</h2>
-        <div className="actions">
-          <button type="button" onClick={() => loadExcelPreview("input")}>
-            View input sheet
-          </button>
-          <button type="button" onClick={() => loadExcelPreview("timelog")}>
-            View timelog sheet
-          </button>
-          <button className="primary" type="button" onClick={handleGenerateApu}>
-            Create APU Tracking Sheet
-          </button>
-          <button className="success" type="button" onClick={() => handleDownload("apu")}>
-            Download APU Sheet
-          </button>
-        </div>
-        {excelPreview && !excelPreview.empty && (
-          <div className="actions" style={{ marginTop: "1rem" }}>
-            <button className="success" type="button" onClick={handleUpdateExcel}>
-              Save Changes to {excelPreview.which === "timelog" ? "Timelog" : "Input"} Excel
-            </button>
-            <button className="primary" type="button" onClick={() => handleDownload(excelPreview.which)}>
-              Download Current Sheet
-            </button>
-          </div>
-        )}
-        {excelPreview && (
-          <div className="table-wrap preview-wrap">
-            {excelPreview.empty ? (
-              <p className="muted">No rows in this sheet.</p>
-            ) : (
-              <table className="preview-table">
-                <thead>
-                  <tr>
-                    {excelPreview.columns.map((col) => (
-                      <th key={col}>{col}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {excelPreview.rows.map((row, idx) => (
-                    <tr key={idx}>
-                      {excelPreview.columns.map((col) => (
-                        <td key={col}>
-                          <input
-                            value={row[col] != null ? String(row[col]) : ""}
-                            onChange={(e) => updatePreviewRow(idx, col, e.target.value)}
-                            className="inline-input"
-                          />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
-      </section>
-
-      <section className="card">
-        <h2>Task Preview</h2>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Issue ID</th>
-                <th>Hours</th>
-                <th>Comments</th>
-                <th>Source ID</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={6}>No tasks added yet.</td>
-                </tr>
-              ) : (
-                rows.map((row, index) => (
-                  <tr key={`${row.source_id || "manual"}-${index}`}>
-                    <td>
-                      <input type="date" value={row.date || ""} onChange={(e) => updateRow(index, "date", e.target.value)} />
-                    </td>
-                    <td>
-                      <input type="number" value={row.issue_id || ""} onChange={(e) => updateRow(index, "issue_id", e.target.value)} />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0.5"
-                        value={row.hours || ""}
-                        onChange={(e) => updateRow(index, "hours", e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input value={row.comments || ""} onChange={(e) => updateRow(index, "comments", e.target.value)} />
-                    </td>
-                    <td>
-                      <input value={row.source_id || ""} onChange={(e) => updateRow(index, "source_id", e.target.value)} />
-                    </td>
-                    <td>
-                      <button className="delete-btn" type="button" onClick={() => setRows((prev) => prev.filter((_item, i) => i !== index))}>
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))
+            <div className="actions">
+              <button className="primary" onClick={handleConnect}>
+                <CheckCircle2 size={18} /> Connect Account
+              </button>
+            </div>
+            <AnimatePresence>
+              {status.text && (
+                <motion.div
+                  className={`status ${status.error ? "error" : ""}`}
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                >
+                  {status.loading ? <Loader2 className="animate-spin" size={16} /> : status.error ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}
+                  {status.text}
+                </motion.div>
               )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </main>
+            </AnimatePresence>
+          </motion.section>
+        ) : (
+          <motion.section
+            className="card"
+            variants={cardVariants}
+            initial="hidden"
+            animate="visible"
+          >
+            <div className="card-header">
+              <h2><Github size={24} color="#60a5fa" /> GitHub Workspace</h2>
+              <div className="user-badge">
+                {github.user?.avatar_url && <img src={github.user.avatar_url} alt="avatar" />}
+                <span>{github.user?.name || github.username}</span>
+                <button className="text-btn" onClick={handleDisconnect}><LogOut size={14} /> Disconnect</button>
+              </div>
+            </div>
+            <div className="grid">
+              <label className="span-2">
+                Repository
+                <input
+                  value={form.repository}
+                  onChange={(e) => setField("repository", e.target.value)}
+                  placeholder="owner/repo (optional for all repos)"
+                />
+              </label>
+              <label>
+                Branch
+                <input value={form.branch} onChange={(e) => setField("branch", e.target.value)} placeholder="main" />
+              </label>
+              <label>
+                From
+                <input type="date" value={form.fromDate} onChange={(e) => setField("fromDate", e.target.value)} />
+              </label>
+              <label>
+                Until
+                <input type="date" value={form.toDate} onChange={(e) => setField("toDate", e.target.value)} />
+              </label>
+            </div>
+
+            <div className="actions">
+              <button className="primary" onClick={handleImport}>
+                <RefreshCw size={18} className={status.loading ? "animate-spin" : ""} /> Import Commits
+              </button>
+              <button onClick={() => setRows((prev) => [...prev, emptyRow()])}>
+                <Plus size={18} /> Add Manual Row
+              </button>
+              <button className="success" onClick={handleSave}>
+                <Save size={18} /> Save to Excel
+              </button>
+              <button onClick={handleGenerateExcel}>
+                <Layout size={18} /> Build Timelog
+              </button>
+              <button className="success" onClick={handleUploadRedmine}>
+                <Upload size={18} /> Push to Redmine
+              </button>
+            </div>
+
+            <AnimatePresence>
+              {status.text && (
+                <motion.div
+                  className={`status ${status.error ? "error" : ""}`}
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                >
+                  {status.loading ? <Loader2 className="animate-spin" size={16} /> : status.error ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}
+                  {status.text}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.section>
+        )}
+
+        <motion.section
+          className="card"
+          variants={cardVariants}
+          initial="hidden"
+          animate="visible"
+          transition={{ delay: 0.1 }}
+        >
+          <h2><FileText size={24} color="#a78bfa" /> Document Center</h2>
+          <div className="actions">
+            <button onClick={() => loadExcelPreview("input")}>
+              <Eye size={18} /> Preview Input
+            </button>
+            <button onClick={() => loadExcelPreview("timelog")}>
+              <Eye size={18} /> Preview Timelog
+            </button>
+            <button className="primary" onClick={handleGenerateApu}>
+              <FileOutput size={18} /> Create 9-Column APU
+            </button>
+            <button className="success" onClick={() => handleDownload("apu")}>
+              <Download size={18} /> Download APU
+            </button>
+          </div>
+
+          <AnimatePresence>
+            {excelPreview && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="preview-container"
+              >
+                <div className="actions" style={{ marginBottom: "1rem" }}>
+                  <button className="success" onClick={handleUpdateExcel}>
+                    <Save size={16} /> Apply Changes
+                  </button>
+                  <button className="primary" onClick={() => handleDownload(excelPreview.which)}>
+                    <Download size={16} /> Export {excelPreview.which}
+                  </button>
+                </div>
+                <div className="table-wrap">
+                  {excelPreview.empty ? (
+                    <p className="muted" style={{ padding: "20px" }}>This sheet is currently empty.</p>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          {excelPreview.columns.map((col) => (
+                            <th key={col}>{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {excelPreview.rows.map((row, idx) => (
+                          <tr key={idx}>
+                            {excelPreview.columns.map((col) => (
+                              <td key={col}>
+                                <input
+                                  value={row[col] != null ? String(row[col]) : ""}
+                                  onChange={(e) => {
+                                    const nextRows = [...excelPreview.rows];
+                                    nextRows[idx] = { ...nextRows[idx], [col]: e.target.value };
+                                    setExcelPreview({ ...excelPreview, rows: nextRows });
+                                  }}
+                                  className="inline-input"
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.section>
+
+        <motion.section
+          className="card"
+          variants={cardVariants}
+          initial="hidden"
+          animate="visible"
+          transition={{ delay: 0.2 }}
+        >
+          <h2><Clock size={24} color="#fcd34d" /> Pending Tasks</h2>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th><Calendar size={14} /> Date</th>
+                  <th><Hash size={14} /> Issue</th>
+                  <th><Clock size={14} /> Hrs</th>
+                  <th><FileText size={14} /> Comments</th>
+                  <th>Source</th>
+                  <th>Manage</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={{ textAlign: "center", padding: "40px", color: "#94a3b8" }}>
+                      No tasks staged. Use GitHub Import or Add Row.
+                    </td>
+                  </tr>
+                ) : (
+                  rows.map((row, index) => (
+                    <motion.tr
+                      key={`${row.source_id || "manual"}-${index}`}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: index * 0.05 }}
+                    >
+                      <td>
+                        <input type="date" value={row.date || ""} onChange={(e) => updateRow(index, "date", e.target.value)} className="inline-input" />
+                      </td>
+                      <td>
+                        <input type="number" value={row.issue_id || ""} onChange={(e) => updateRow(index, "issue_id", e.target.value)} className="inline-input" />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0.5"
+                          value={row.hours || ""}
+                          onChange={(e) => updateRow(index, "hours", e.target.value)}
+                          className="inline-input"
+                          style={{ width: "60px" }}
+                        />
+                      </td>
+                      <td>
+                        <input value={row.comments || ""} onChange={(e) => updateRow(index, "comments", e.target.value)} className="inline-input" />
+                      </td>
+                      <td>
+                        <span className="muted" style={{ fontSize: "11px" }}>{row.source_id ? row.source_id.slice(0, 8) : "manual"}</span>
+                      </td>
+                      <td>
+                        <button className="delete-btn" onClick={() => setRows((prev) => prev.filter((_, i) => i !== index))}>
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    </motion.tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </motion.section>
+      </div>
+
+      <style>{`
+        .animate-spin { animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `}</style>
+    </motion.main>
   );
 }
