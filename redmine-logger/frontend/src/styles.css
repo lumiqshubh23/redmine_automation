@@ -172,6 +172,7 @@ td input {
   background: #b91c1c;
   padding: 6px 10px;
 }
+
 .card.highlight {
   border: 1px solid rgba(37, 99, 235, 0.4);
   background: linear-gradient(145deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95));
@@ -222,4 +223,19 @@ td input {
 .text-btn:hover {
   color: #fca5a5;
   background: transparent;
+}
+
+.inline-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  padding: 4px;
+}
+
+.inline-input:focus {
+  background: #0f172a;
+  outline: 1px solid #2563eb;
+  border-radius: 4px;
 }

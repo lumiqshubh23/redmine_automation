@@ -24,6 +24,7 @@ const EXCEL_HEADERS = ["date", "issue_id", "hours", "comments", "source_id"];
 const DATA_DIR = __dirname;
 const DEFAULT_INPUT_XLSX = path.join(DATA_DIR, "input.xlsx");
 const DEFAULT_TIMELOG_XLSX = path.join(DATA_DIR, "timelog.xlsx");
+const APU_TRACKING_XLSX = path.join(DATA_DIR, "APU-Off-line-Tracking-Sheet.xlsx");
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -163,22 +164,30 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
 
   if (!branch) {
     try {
-      let branchNames = [];
-      let bPage = 1;
-      while (true) {
-        const branchesRes = await axios.get(`https://api.github.com/repos/${owner}/${repo}/branches`, {
-          headers,
-          params: { per_page: 100, page: bPage }
-        });
-        const fetched = branchesRes.data || [];
-        if (fetched.length === 0) break;
-        branchNames.push(...fetched.map(b => b.name));
-        if (fetched.length < 100) break;
-        bPage++;
+      // Optimize: Instead of querying hundreds of branches, find the ones the user actually pushed to recently
+      const eventsRes = await axios.get(`https://api.github.com/users/${username}/events`, {
+        headers,
+        params: { per_page: 100 }
+      });
+
+      const targetRepoName = `${owner}/${repo}`.toLowerCase();
+      const pushEvents = (eventsRes.data || []).filter(
+        e => e.type === "PushEvent" && e.repo?.name?.toLowerCase() === targetRepoName
+      );
+
+      const activeBranches = new Set();
+      for (const ev of pushEvents) {
+        if (!ev.payload || !ev.payload.ref) continue;
+        activeBranches.add(ev.payload.ref.replace("refs/heads/", ""));
       }
 
+      // Always include common default branches just in case
+      activeBranches.add('main');
+      activeBranches.add('master');
+      activeBranches.add('develop');
+
       const allBranchCommits = [];
-      for (const bName of branchNames) {
+      for (const bName of activeBranches) {
         try {
           const commits = await fetchCommits({ owner, repo, username, token, branch: bName, fromDate, toDate });
           allBranchCommits.push(...commits);
@@ -251,7 +260,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
         date: commitDate,
         issue_id: DEFAULT_ISSUE_ID,
         hours: DEFAULT_HOURS,
-        comments: `GitHub: ${messageLine}`,
+        comments: messageLine,
         source_id: item.sha,
       };
     })
@@ -636,6 +645,111 @@ app.post("/api/redmine/upload", async (req, res) => {
   } catch (error) {
     return res.status(500).json({ error: error.message || "Upload failed." });
   }
+});
+
+app.post("/api/excel/update", (req, res) => {
+  const { which, rows } = req.body || {};
+  const filePath = which === "timelog" ? DEFAULT_TIMELOG_XLSX : DEFAULT_INPUT_XLSX;
+
+  if (!Array.isArray(rows)) {
+    return res.status(400).json({ error: "rows must be an array." });
+  }
+
+  try {
+    const workbook = XLSX.utils.book_new();
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, sheet, which === "timelog" ? "TimeLog" : "Tasks");
+    XLSX.writeFile(workbook, filePath);
+    return res.json({ success: true, message: `Updated ${which} sheet with ${rows.length} rows.` });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Update failed." });
+  }
+});
+
+app.post("/api/excel/generate-apu", (req, res) => {
+  try {
+    if (!fs.existsSync(DEFAULT_TIMELOG_XLSX)) {
+      return res.status(400).json({ error: "Timelog file not found. Generate it first." });
+    }
+
+    const timelogWb = XLSX.readFile(DEFAULT_TIMELOG_XLSX);
+    const timelogData = XLSX.utils.sheet_to_json(timelogWb.Sheets[timelogWb.SheetNames[0]]);
+
+    const apuRows = timelogData.map((row, index) => {
+      const isScrum = String(row.comments || "").includes("Daily Scrum Call");
+
+      // Map to the 9 Columns exactly
+      return {
+        "S No": index + 1,
+        "Resource Name": "", // Placeholder for user
+        "Resource ID": "",   // Placeholder for user
+        "Activity Date": normalizeExcelDate(row.date),
+        "CR-DM-PDM ID": row.issue_id || row.id || "",
+        "Role": "",          // Placeholder for user
+        "Activity Name": isScrum ? "Daily SCRUM" : "Development & Configuration",
+        "Time Spent(In Hours)": row.hours || 0,
+        "Activity Description": row.comments || ""
+      };
+    });
+
+    // If template exists, use it to preserve potential styles/other sheets
+    let workbook;
+    if (fs.existsSync(APU_TRACKING_XLSX)) {
+      workbook = XLSX.readFile(APU_TRACKING_XLSX);
+    } else {
+      workbook = XLSX.utils.book_new();
+    }
+
+    const newSheet = XLSX.utils.json_to_sheet(apuRows);
+
+    // Set column widths for "9-column design"
+    newSheet["!cols"] = [
+      { wch: 6 },  // S No
+      { wch: 20 }, // Resource Name
+      { wch: 15 }, // Resource ID
+      { wch: 15 }, // Activity Date
+      { wch: 20 }, // CR-DM-PDM ID
+      { wch: 15 }, // Role
+      { wch: 30 }, // Activity Name
+      { wch: 20 }, // Time Spent
+      { wch: 80 }  // Activity Description
+    ];
+
+    const sheetName = workbook.SheetNames[0] || "Sheet1";
+    workbook.Sheets[sheetName] = newSheet;
+    if (!workbook.SheetNames.includes(sheetName)) {
+      workbook.SheetNames.push(sheetName);
+    }
+
+    XLSX.writeFile(workbook, APU_TRACKING_XLSX);
+
+    return res.json({ success: true, message: "APU Tracking Sheet generated with design preservation.", rows: apuRows.length });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "APU Generation failed." });
+  }
+});
+
+app.get("/api/excel/download", (req, res) => {
+  const which = String(req.query.which || "apu").toLowerCase();
+  let filePath;
+  let fileName;
+
+  if (which === "apu") {
+    filePath = APU_TRACKING_XLSX;
+    fileName = "APU-Off-line-Tracking-Sheet.xlsx";
+  } else if (which === "timelog") {
+    filePath = DEFAULT_TIMELOG_XLSX;
+    fileName = "timelog.xlsx";
+  } else {
+    filePath = DEFAULT_INPUT_XLSX;
+    fileName = "input.xlsx";
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: "File not found." });
+  }
+
+  res.download(filePath, fileName);
 });
 
 const server = app.listen(PORT, "0.0.0.0", () => {

@@ -230,6 +230,58 @@ export default function App() {
     }
   }
 
+  function updatePreviewRow(index, key, value) {
+    setExcelPreview((prev) => {
+      if (!prev) return null;
+      const nextRows = [...prev.rows];
+      nextRows[index] = { ...nextRows[index], [key]: value };
+      return { ...prev, rows: nextRows };
+    });
+  }
+
+  async function handleUpdateExcel() {
+    if (!excelPreview || excelPreview.rows.length === 0) return;
+    setMessage(`Updating ${excelPreview.which} sheet...`);
+    try {
+      const res = await fetch(`${API_BASE}/api/excel/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ which: excelPreview.which, rows: excelPreview.rows }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.error || "Update failed.", true);
+        return;
+      }
+      setMessage(data.message || "Excel updated successfully.");
+    } catch (error) {
+      setMessage(error.message || "Update failed.", true);
+    }
+  }
+
+  async function handleGenerateApu() {
+    setMessage("Generating APU Tracking Sheet...");
+    try {
+      const res = await fetch(`${API_BASE}/api/excel/generate-apu`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.error || "APU generation failed.", true);
+        return;
+      }
+      setMessage(`${data.message} (${data.rows} rows). Ready to download.`);
+    } catch (error) {
+      setMessage(error.message || "APU generation failed.", true);
+    }
+  }
+
+  function handleDownload(which) {
+    window.location.href = `${API_BASE}/api/excel/download?which=${which}`;
+  }
+
   function updateRow(index, key, value) {
     setRows((prev) => {
       const next = [...prev];
@@ -336,7 +388,23 @@ export default function App() {
           <button type="button" onClick={() => loadExcelPreview("timelog")}>
             View timelog sheet
           </button>
+          <button className="primary" type="button" onClick={handleGenerateApu}>
+            Create APU Tracking Sheet
+          </button>
+          <button className="success" type="button" onClick={() => handleDownload("apu")}>
+            Download APU Sheet
+          </button>
         </div>
+        {excelPreview && !excelPreview.empty && (
+          <div className="actions" style={{ marginTop: "1rem" }}>
+            <button className="success" type="button" onClick={handleUpdateExcel}>
+              Save Changes to {excelPreview.which === "timelog" ? "Timelog" : "Input"} Excel
+            </button>
+            <button className="primary" type="button" onClick={() => handleDownload(excelPreview.which)}>
+              Download Current Sheet
+            </button>
+          </div>
+        )}
         {excelPreview && (
           <div className="table-wrap preview-wrap">
             {excelPreview.empty ? (
@@ -354,7 +422,13 @@ export default function App() {
                   {excelPreview.rows.map((row, idx) => (
                     <tr key={idx}>
                       {excelPreview.columns.map((col) => (
-                        <td key={col}>{row[col] != null ? String(row[col]) : ""}</td>
+                        <td key={col}>
+                          <input
+                            value={row[col] != null ? String(row[col]) : ""}
+                            onChange={(e) => updatePreviewRow(idx, col, e.target.value)}
+                            className="inline-input"
+                          />
+                        </td>
                       ))}
                     </tr>
                   ))}
