@@ -29,6 +29,11 @@ const APU_TRACKING_XLSX = path.join(DATA_DIR, "APU-Off-line-Tracking-Sheet.xlsx"
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
+// Example API for verification
+app.get("/api/test", (req, res) => {
+  res.json({ message: "Backend working" });
+});
+
 function toDateOnly(value) {
   if (!value) return null;
   const date = new Date(value);
@@ -790,6 +795,20 @@ app.get("/api/excel/download", (req, res) => {
   }
 
   res.download(filePath, fileName);
+});
+
+// Serve React build from the frontend directory
+const frontendBuildPath = path.join(__dirname, "../frontend/dist");
+app.use(express.static(frontendBuildPath));
+
+// Catch-all route to serve the React application
+app.get("*", (req, res) => {
+  const indexPath = path.join(frontendBuildPath, "index.html");
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).send("Frontend build not found. Please run 'npm run build' in the frontend directory.");
+  }
 });
 
 const server = app.listen(PORT, "0.0.0.0", () => {

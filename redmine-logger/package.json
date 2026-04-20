@@ -4,8 +4,9 @@
   "private": true,
   "main": "backend/server.js",
   "scripts": {
-    "start": "npm start --prefix backend",
     "backend": "npm start --prefix backend",
-    "frontend": "npm run dev --prefix frontend"
+    "frontend": "npm run dev --prefix frontend",
+    "start": "node backend/server.js",
+    "build": "cd frontend && npm install && npm run build"
   }
 }

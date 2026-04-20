@@ -22,7 +22,7 @@ import {
   Loader2
 } from "lucide-react";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+const API_BASE = "";
 
 const emptyRow = () => ({
   date: new Date().toISOString().slice(0, 10),
