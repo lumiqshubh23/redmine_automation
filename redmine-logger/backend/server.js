@@ -802,7 +802,7 @@ const frontendBuildPath = path.join(__dirname, "../frontend/dist");
 app.use(express.static(frontendBuildPath));
 
 // Catch-all route to serve the React application
-app.get("*", (req, res) => {
+app.use((req, res) => {
   const indexPath = path.join(frontendBuildPath, "index.html");
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);

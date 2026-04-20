@@ -1,19 +1,24 @@
-/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/path-to-regexp/dist/index.js:108
-                    throw new PathError(`Missing parameter name at index ${index}`, str);
-                    ^
+node:internal/modules/cjs/loader:1386
+  throw err;
+  ^
 
-PathError [TypeError]: Missing parameter name at index 1: *; visit https://git.new/pathToRegexpError for info
-    at consumeUntil (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/path-to-regexp/dist/index.js:108:27)
-    at parse (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/path-to-regexp/dist/index.js:140:26)
-    at process (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/path-to-regexp/dist/index.js:263:56)
-    at pathToRegexp (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/path-to-regexp/dist/index.js:274:5)
-    at Object.match (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/path-to-regexp/dist/index.js:225:30)
-    at matcher (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/router/lib/layer.js:86:23)
-    at new Layer (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/router/lib/layer.js:93:62)
-    at Function.route (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/router/index.js:428:17)
-    at Function.route (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/express/lib/application.js:257:22)
-    at app.<computed> [as get] (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/node_modules/express/lib/application.js:478:22) {
-  originalPath: '*'
+Error: Cannot find module 'express'
+Require stack:
+- /home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/server.js
+    at Function._resolveFilename (node:internal/modules/cjs/loader:1383:15)
+    at defaultResolveImpl (node:internal/modules/cjs/loader:1025:19)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1030:22)
+    at Function._load (node:internal/modules/cjs/loader:1192:37)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:237:24)
+    at Module.require (node:internal/modules/cjs/loader:1463:12)
+    at require (node:internal/modules/helpers:147:16)
+    at Object.<anonymous> (/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/server.js:3:17)
+    at Module._compile (node:internal/modules/cjs/loader:1706:14) {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: [
+    '/home/shubham/Documents/Personal/redmineLog/redmine-logger/backend/server.js'
+  ]
 }
 
 Node.js v22.21.0
