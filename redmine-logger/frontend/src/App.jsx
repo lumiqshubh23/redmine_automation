@@ -288,7 +288,8 @@ export default function App() {
         setMessage(data.error || "APU generation failed.", true);
         return;
       }
-      setMessage(`${data.message}. Ready to download.`);
+      setMessage(`${data.message}. Downloading...`);
+      handleDownload("apu");
     } catch (error) {
       setMessage(error.message || "APU generation failed.", true);
     }
@@ -459,16 +460,13 @@ export default function App() {
           <h2><FileText size={24} color="#a78bfa" /> Document Center</h2>
           <div className="actions">
             <button onClick={() => loadExcelPreview("input")}>
-              <Eye size={18} /> Preview Input
+              <Eye size={18} /> Preview Commit
             </button>
             <button onClick={() => loadExcelPreview("timelog")}>
               <Eye size={18} /> Preview Timelog
             </button>
             <button className="primary" onClick={handleGenerateApu}>
-              <FileOutput size={18} /> Create 9-Column APU
-            </button>
-            <button className="success" onClick={() => handleDownload("apu")}>
-              <Download size={18} /> Download APU
+              <Download size={18} /> Create & Download APU
             </button>
           </div>
 

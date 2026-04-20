@@ -103,6 +103,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
   }
 
   const isGlobalSearch = !owner || !repo;
+  console.log(`[fetchCommits] owner=${owner}, repo=${repo}, user=${username}, branch=${branch}, global=${isGlobalSearch}`);
 
   if (isGlobalSearch) {
     const allCommits = [];
@@ -164,7 +165,31 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
 
   if (!branch) {
     try {
-      // Optimize: Instead of querying hundreds of branches, find the ones the user actually pushed to recently
+      // Step 1: Use GitHub Search API to find commits across all branches efficiently
+      const q = `author:${username} repo:${owner}/${repo} committer-date:${fromDate}..${toDate}`;
+      console.log(`[fetchCommits] Trying Search API: ${q}`);
+      const searchRes = await axios.get(`https://api.github.com/search/commits`, {
+        headers: { ...headers, Accept: 'application/vnd.github.cloak-preview' },
+        params: { q, sort: 'committer-date', order: 'desc', per_page: 100 }
+      });
+      console.log(`[fetchCommits] Search API returned ${searchRes.data?.total_count} items`);
+
+      if (searchRes.data && searchRes.data.items && searchRes.data.items.length > 0) {
+        return searchRes.data.items.map(item => ({
+          date: item.commit.committer.date.slice(0, 10),
+          issue_id: 158484,
+          hours: 1,
+          comments: item.commit.message,
+          source_id: item.sha,
+          url: item.html_url
+        }));
+      }
+    } catch (searchErr) {
+      console.warn("Search API failed, falling back to event-based search", searchErr.message);
+    }
+
+    try {
+      // Fallback: Check recent push events to identify active branches
       const eventsRes = await axios.get(`https://api.github.com/users/${username}/events`, {
         headers,
         params: { per_page: 100 }
@@ -175,16 +200,10 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
         e => e.type === "PushEvent" && e.repo?.name?.toLowerCase() === targetRepoName
       );
 
-      const activeBranches = new Set();
+      const activeBranches = new Set(['main', 'master', 'develop']);
       for (const ev of pushEvents) {
-        if (!ev.payload || !ev.payload.ref) continue;
-        activeBranches.add(ev.payload.ref.replace("refs/heads/", ""));
+        if (ev.payload?.ref) activeBranches.add(ev.payload.ref.replace("refs/heads/", ""));
       }
-
-      // Always include common default branches just in case
-      activeBranches.add('main');
-      activeBranches.add('master');
-      activeBranches.add('develop');
 
       const allBranchCommits = [];
       for (const bName of activeBranches) {
@@ -192,7 +211,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
           const commits = await fetchCommits({ owner, repo, username, token, branch: bName, fromDate, toDate });
           allBranchCommits.push(...commits);
         } catch (err) {
-          console.error(`Failed on branch ${bName}`);
+          // branch might not exist
         }
       }
 
@@ -207,7 +226,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
       uniqueCommits.sort((a, b) => new Date(b.date) - new Date(a.date));
       return uniqueCommits;
     } catch (err) {
-      // safe fallback below
+      console.error("Event-based fallback also failed", err.message);
     }
   }
 
@@ -216,6 +235,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
 
   try {
     while (true) {
+      console.log(`[fetchCommits] Calling commits API: repos/${owner}/${repo}/commits`, { author: username, since, until, sha: branch });
       const response = await axios.get(`https://api.github.com/repos/${owner}/${repo}/commits`, {
         headers,
         params: {
@@ -229,6 +249,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
       });
 
       const commits = response.data || [];
+      console.log(`[fetchCommits] Commits API returned ${commits.length} commits`);
       allCommits.push(...commits);
 
       if (commits.length < 100) break;
