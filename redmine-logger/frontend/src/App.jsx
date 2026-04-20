@@ -167,10 +167,42 @@ export default function App() {
         return;
       }
 
-      setRows((prev) => mergeUniqueRows(prev, data.entries || []));
+      setRows((prev) => {
+        const next = mergeUniqueRows(prev, data.entries || []);
+        if (next.length > 0) {
+          // Automation Sequence: Save -> Build
+          setTimeout(() => handleSaveAndBuild(next), 500);
+        }
+        return next;
+      });
       setMessage(`Imported ${data.total} commits.`);
     } catch (error) {
       setMessage(error.message || "GitHub import failed.", true);
+    }
+  }
+
+  async function handleSaveAndBuild(currentRows) {
+    setMessage("Saving imported data...", false, true);
+    try {
+      const saveRes = await fetch(`${API_BASE}/api/excel/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries: currentRows }),
+      });
+      if (!saveRes.ok) throw new Error("Auto-save failed.");
+
+      setMessage("Building timelog...", false, true);
+      const buildRes = await fetch(`${API_BASE}/api/excel/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!buildRes.ok) throw new Error("Auto-build failed.");
+
+      setMessage("All tasks synced and timelog updated!");
+      setTimeout(() => loadExcelPreview("timelog"), 500);
+    } catch (err) {
+      setMessage(err.message, true);
     }
   }
 
@@ -419,16 +451,10 @@ export default function App() {
 
             <div className="actions">
               <button className="primary" onClick={handleImport}>
-                <RefreshCw size={18} className={status.loading ? "animate-spin" : ""} /> Import Commits
+                <RefreshCw size={18} className={status.loading ? "animate-spin" : ""} /> Import & Sync Commits
               </button>
               <button onClick={() => setRows((prev) => [...prev, emptyRow()])}>
                 <Plus size={18} /> Add Manual Row
-              </button>
-              <button className="success" onClick={handleSave}>
-                <Save size={18} /> Save to Excel
-              </button>
-              <button onClick={handleGenerateExcel}>
-                <Layout size={18} /> Build Timelog
               </button>
               <button className="success" onClick={handleUploadRedmine}>
                 <Upload size={18} /> Push to Redmine
@@ -459,11 +485,8 @@ export default function App() {
         >
           <h2><FileText size={24} color="#a78bfa" /> Document Center</h2>
           <div className="actions">
-            <button onClick={() => loadExcelPreview("input")}>
-              <Eye size={18} /> Preview Commit
-            </button>
             <button onClick={() => loadExcelPreview("timelog")}>
-              <Eye size={18} /> Preview Timelog
+              <Eye size={18} /> Preview Spent Time
             </button>
             <button className="primary" onClick={handleGenerateApu}>
               <Download size={18} /> Create & Download APU
@@ -478,14 +501,6 @@ export default function App() {
                 exit={{ opacity: 0, scale: 0.95 }}
                 className="preview-container"
               >
-                <div className="actions" style={{ marginBottom: "1rem" }}>
-                  <button className="success" onClick={handleUpdateExcel}>
-                    <Save size={16} /> Apply Changes
-                  </button>
-                  <button className="primary" onClick={() => handleDownload(excelPreview.which)}>
-                    <Download size={16} /> Export {excelPreview.which}
-                  </button>
-                </div>
                 <div className="table-wrap">
                   {excelPreview.empty ? (
                     <p className="muted" style={{ padding: "20px" }}>This sheet is currently empty.</p>

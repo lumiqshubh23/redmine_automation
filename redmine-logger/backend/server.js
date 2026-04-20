@@ -165,17 +165,36 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
 
   if (!branch) {
     try {
-      // Step 1: Use GitHub Search API to find commits across all branches efficiently
-      const q = `author:${username} repo:${owner}/${repo} committer-date:${fromDate}..${toDate}`;
+      // Refined Search: check both author and committer to be thorough
+      const q = `repo:${owner}/${repo} author:${username} committer-date:${fromDate}..${toDate}`;
       console.log(`[fetchCommits] Trying Search API: ${q}`);
       const searchRes = await axios.get(`https://api.github.com/search/commits`, {
         headers: { ...headers, Accept: 'application/vnd.github.cloak-preview' },
         params: { q, sort: 'committer-date', order: 'desc', per_page: 100 }
       });
-      console.log(`[fetchCommits] Search API returned ${searchRes.data?.total_count} items`);
+      console.log(`[fetchCommits] Search API returned ${searchRes.data?.total_count || 0} items`);
 
       if (searchRes.data && searchRes.data.items && searchRes.data.items.length > 0) {
         return searchRes.data.items.map(item => ({
+          date: item.commit.committer.date.slice(0, 10),
+          issue_id: 158484,
+          hours: 1,
+          comments: item.commit.message,
+          source_id: item.sha,
+          url: item.html_url
+        }));
+      }
+
+      // If no results for author, try committer specifically
+      const q2 = `repo:${owner}/${repo} committer:${username} committer-date:${fromDate}..${toDate}`;
+      console.log(`[fetchCommits] Trying broader Search API: ${q2}`);
+      const searchRes2 = await axios.get(`https://api.github.com/search/commits`, {
+        headers: { ...headers, Accept: 'application/vnd.github.cloak-preview' },
+        params: { q: q2, sort: 'committer-date', order: 'desc', per_page: 100 }
+      });
+
+      if (searchRes2.data && searchRes2.data.items && searchRes2.data.items.length > 0) {
+        return searchRes2.data.items.map(item => ({
           date: item.commit.committer.date.slice(0, 10),
           issue_id: 158484,
           hours: 1,
