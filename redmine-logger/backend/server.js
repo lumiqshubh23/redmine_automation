@@ -22,9 +22,20 @@ const DEFAULT_ISSUE_ID = 158484;
 const DEFAULT_HOURS = 1;
 const EXCEL_HEADERS = ["date", "issue_id", "hours", "comments", "source_id"];
 const DATA_DIR = __dirname;
-const DEFAULT_INPUT_XLSX = path.join(DATA_DIR, "input.xlsx");
-const DEFAULT_TIMELOG_XLSX = path.join(DATA_DIR, "timelog.xlsx");
-const APU_TRACKING_XLSX = path.join(DATA_DIR, "APU-Off-line-Tracking-Sheet.xlsx");
+const USER_DATA_BASE = path.join(DATA_DIR, "user_data");
+const TEMPLATE_APU = path.join(DATA_DIR, "APU-Off-line-Tracking-Sheet.xlsx");
+
+function getUserPaths(userId) {
+  if (!userId) userId = "global";
+  const userDir = path.join(USER_DATA_BASE, userId);
+  if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
+
+  return {
+    inputXlsx: path.join(userDir, "input.xlsx"),
+    timelogXlsx: path.join(userDir, "timelog.xlsx"),
+    apuXlsx: path.join(userDir, "APU_Tracking.xlsx")
+  };
+}
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -577,7 +588,9 @@ app.post("/api/github/commits", async (req, res) => {
 
 app.get("/api/excel/preview", (req, res) => {
   const which = String(req.query.which || "input").toLowerCase();
-  const filePath = which === "timelog" ? DEFAULT_TIMELOG_XLSX : DEFAULT_INPUT_XLSX;
+  const userId = req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
+  const filePath = which === "timelog" ? paths.timelogXlsx : paths.inputXlsx;
 
   try {
     if (!fs.existsSync(filePath)) {
@@ -604,7 +617,9 @@ app.get("/api/excel/preview", (req, res) => {
 
 app.post("/api/excel/save", (req, res) => {
   const { entries } = req.body || {};
-  const targetPath = DEFAULT_INPUT_XLSX;
+  const userId = req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
+  const targetPath = paths.inputXlsx;
 
   if (!Array.isArray(entries) || entries.length === 0) {
     return res.status(400).json({ error: "entries must be a non-empty array." });
@@ -655,8 +670,10 @@ app.post("/api/excel/generate", (req, res) => {
     scrumHours = 1,
   } = req.body || {};
 
-  const inputPath = DEFAULT_INPUT_XLSX;
-  const outputPath = DEFAULT_TIMELOG_XLSX;
+  const userId = req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
+  const inputPath = paths.inputXlsx;
+  const outputPath = paths.timelogXlsx;
 
   try {
     const workbook = XLSX.readFile(inputPath);
@@ -696,7 +713,9 @@ app.post("/api/excel/generate", (req, res) => {
 
 app.post("/api/redmine/upload", async (req, res) => {
   const { delayMs = 500, apiKey } = req.body || {};
-  const sourcePath = DEFAULT_TIMELOG_XLSX;
+  const userId = req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
+  const sourcePath = paths.timelogXlsx;
 
   try {
     const workbook = XLSX.readFile(sourcePath);
@@ -721,7 +740,9 @@ app.post("/api/redmine/upload", async (req, res) => {
 
 app.post("/api/excel/update", (req, res) => {
   const { which, rows } = req.body || {};
-  const filePath = which === "timelog" ? DEFAULT_TIMELOG_XLSX : DEFAULT_INPUT_XLSX;
+  const userId = req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
+  const filePath = which === "timelog" ? paths.timelogXlsx : paths.inputXlsx;
 
   if (!Array.isArray(rows)) {
     return res.status(400).json({ error: "rows must be an array." });
@@ -739,12 +760,15 @@ app.post("/api/excel/update", (req, res) => {
 });
 
 app.post("/api/excel/generate-apu", (req, res) => {
+  const userId = req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
+
   try {
-    if (!fs.existsSync(DEFAULT_TIMELOG_XLSX)) {
+    if (!fs.existsSync(paths.timelogXlsx)) {
       return res.status(400).json({ error: "Timelog file not found. Generate it first." });
     }
 
-    const timelogWb = XLSX.readFile(DEFAULT_TIMELOG_XLSX);
+    const timelogWb = XLSX.readFile(paths.timelogXlsx);
     const timelogData = XLSX.utils.sheet_to_json(timelogWb.Sheets[timelogWb.SheetNames[0]]);
 
     const apuRows = timelogData.map((row, index) => {
@@ -766,8 +790,8 @@ app.post("/api/excel/generate-apu", (req, res) => {
 
     // If template exists, use it to preserve potential styles/other sheets
     let workbook;
-    if (fs.existsSync(APU_TRACKING_XLSX)) {
-      workbook = XLSX.readFile(APU_TRACKING_XLSX);
+    if (fs.existsSync(TEMPLATE_APU)) {
+      workbook = XLSX.readFile(TEMPLATE_APU);
     } else {
       workbook = XLSX.utils.book_new();
     }
@@ -793,7 +817,7 @@ app.post("/api/excel/generate-apu", (req, res) => {
       workbook.SheetNames.push(sheetName);
     }
 
-    XLSX.writeFile(workbook, APU_TRACKING_XLSX);
+    XLSX.writeFile(workbook, paths.apuXlsx);
 
     return res.json({ success: true, message: "APU Tracking Sheet generated with design preservation.", rows: apuRows.length });
   } catch (error) {
@@ -803,17 +827,19 @@ app.post("/api/excel/generate-apu", (req, res) => {
 
 app.get("/api/excel/download", (req, res) => {
   const which = String(req.query.which || "apu").toLowerCase();
+  const userId = req.query.userId || req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
   let filePath;
   let fileName;
 
   if (which === "apu") {
-    filePath = APU_TRACKING_XLSX;
+    filePath = paths.apuXlsx;
     fileName = "APU-Off-line-Tracking-Sheet.xlsx";
   } else if (which === "timelog") {
-    filePath = DEFAULT_TIMELOG_XLSX;
+    filePath = paths.timelogXlsx;
     fileName = "timelog.xlsx";
   } else {
-    filePath = DEFAULT_INPUT_XLSX;
+    filePath = paths.inputXlsx;
     fileName = "input.xlsx";
   }
 

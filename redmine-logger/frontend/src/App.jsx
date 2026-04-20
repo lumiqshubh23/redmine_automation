@@ -49,30 +49,34 @@ export default function App() {
     redmineApiKey: "",
   });
   const [github, setGithub] = useState(() => {
-    const saved = localStorage.getItem("github_config");
+    const saved = sessionStorage.getItem("github_config");
     return saved ? JSON.parse(saved) : { connected: false, username: "", token: "", user: null };
   });
   const [redmine, setRedmine] = useState(() => {
-    const saved = localStorage.getItem("redmine_config");
+    const saved = sessionStorage.getItem("redmine_config");
     return saved ? JSON.parse(saved) : { connected: false, url: "", apiKey: "", user: null };
   });
   const [rows, setRows] = useState([]);
   const [status, setStatus] = useState({ text: "Ready.", error: false, loading: false });
   const [excelPreview, setExcelPreview] = useState(null);
 
+  const getUserId = () => {
+    return github.user?.login || (redmine.user?.id ? `rm_${redmine.user.id}` : "anonymous");
+  };
+
   useEffect(() => {
     if (github.connected) {
-      localStorage.setItem("github_config", JSON.stringify(github));
+      sessionStorage.setItem("github_config", JSON.stringify(github));
     } else {
-      localStorage.removeItem("github_config");
+      sessionStorage.removeItem("github_config");
     }
   }, [github]);
 
   useEffect(() => {
     if (redmine.connected) {
-      localStorage.setItem("redmine_config", JSON.stringify(redmine));
+      sessionStorage.setItem("redmine_config", JSON.stringify(redmine));
     } else {
-      localStorage.removeItem("redmine_config");
+      sessionStorage.removeItem("redmine_config");
     }
   }, [redmine]);
 
@@ -190,12 +194,16 @@ export default function App() {
 
   function handleDisconnect() {
     setGithub({ connected: false, username: "", token: "", user: null });
-    setMessage("Disconnected from GitHub.");
+    setRows([]);
+    setExcelPreview(null);
+    setMessage("Disconnected from GitHub. Workspace cleared.");
   }
 
   function handleRedmineDisconnect() {
     setRedmine({ connected: false, url: "", apiKey: "", user: null });
-    setMessage("Disconnected from Redmine.");
+    setRows([]);
+    setExcelPreview(null);
+    setMessage("Disconnected from Redmine. Workspace cleared.");
   }
 
   async function handleImport() {
@@ -203,7 +211,10 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/api/github/commits`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": getUserId()
+        },
         body: JSON.stringify({
           repository: form.repository.trim(),
           username: github.username,
@@ -238,7 +249,10 @@ export default function App() {
     try {
       const saveRes = await fetch(`${API_BASE}/api/excel/save`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": getUserId()
+        },
         body: JSON.stringify({ entries: currentRows }),
       });
       if (!saveRes.ok) throw new Error("Auto-save failed.");
@@ -246,7 +260,10 @@ export default function App() {
       setMessage("Building timelog...", false, true);
       const buildRes = await fetch(`${API_BASE}/api/excel/generate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": getUserId()
+        },
         body: JSON.stringify({}),
       });
       if (!buildRes.ok) throw new Error("Auto-build failed.");
@@ -268,7 +285,10 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/api/excel/save`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": getUserId()
+        },
         body: JSON.stringify({ entries: rows }),
       });
       const data = await res.json();
@@ -288,7 +308,10 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/api/excel/generate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": getUserId()
+        },
         body: JSON.stringify({}),
       });
       const data = await res.json();
@@ -307,7 +330,10 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/api/redmine/upload`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": getUserId()
+        },
         body: JSON.stringify({
           redmineUrl: redmine.url,
           redmineApiKey: redmine.apiKey
@@ -327,7 +353,9 @@ export default function App() {
   async function loadExcelPreview(which) {
     setMessage(which === "timelog" ? "Loading timelog preview..." : "Loading input sheet preview...", false, true);
     try {
-      const res = await fetch(`${API_BASE}/api/excel/preview?which=${encodeURIComponent(which)}`);
+      const res = await fetch(`${API_BASE}/api/excel/preview?which=${encodeURIComponent(which)}`, {
+        headers: { "x-user-id": getUserId() }
+      });
       const data = await res.json();
       if (!res.ok) {
         setMessage(data.error || "Could not load Excel preview.", true);
@@ -348,7 +376,10 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/api/excel/update`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": getUserId()
+        },
         body: JSON.stringify({ which: excelPreview.which, rows: excelPreview.rows }),
       });
       const data = await res.json();
@@ -367,7 +398,10 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/api/excel/generate-apu`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": getUserId()
+        },
         body: JSON.stringify({}),
       });
       const data = await res.json();
@@ -383,7 +417,7 @@ export default function App() {
   }
 
   function handleDownload(which) {
-    window.location.href = `${API_BASE}/api/excel/download?which=${which}`;
+    window.location.href = `${API_BASE}/api/excel/download?which=${which}&userId=${encodeURIComponent(getUserId())}`;
   }
 
   function updateRow(index, key, value) {
@@ -614,6 +648,10 @@ export default function App() {
         */}
       </div>
 
+      <footer className="footer-credits">
+        Built  by <span className="author">Shubham Kumar</span>
+      </footer>
+
       <style>{`
         .animate-spin { animation: spin 1s linear infinite; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -653,6 +691,37 @@ export default function App() {
           height: 300%;
           background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%);
           pointer-events: none;
+        }
+
+        .badge-security {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          background: rgba(16, 185, 129, 0.1);
+          color: #10b981;
+          padding: 4px 8px;
+          border-radius: 12px;
+          border: 1px solid rgba(16, 185, 129, 0.2);
+          margin-left: 15px;
+          vertical-align: middle;
+        }
+
+        .footer-credits {
+          text-align: center;
+          margin-top: 40px;
+          padding-bottom: 20px;
+          color: #94a3b8;
+          font-size: 14px;
+          font-weight: 300;
+        }
+        .footer-credits .author {
+          font-weight: 600;
+          color: #10b981;
+          letter-spacing: 0.5px;
+          text-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
         }
       `}</style>
     </motion.main>
