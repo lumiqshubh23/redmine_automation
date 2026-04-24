@@ -4,6 +4,8 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const XLSX = require("xlsx");
+const { summarizeCommit } = require("./aiService");
+const { normalizeDailyEffort } = require("./effortNormalizer");
 
 let localSecrets = {};
 try {
@@ -21,6 +23,7 @@ const REDMINE_ACTIVITY_ID = Number(process.env.REDMINE_ACTIVITY_ID || 9);
 const DEFAULT_ISSUE_ID = 158484;
 const DEFAULT_HOURS = 1;
 const EXCEL_HEADERS = ["date", "issue_id", "hours", "comments", "source_id"];
+const COMMIT_EXCEL_HEADERS = ["Date", "Commit", "AI Task", "Type", "Effort", "Source ID", "Branch"];
 const DATA_DIR = __dirname;
 const USER_DATA_BASE = path.join(DATA_DIR, "user_data");
 const TEMPLATE_APU = path.join(DATA_DIR, "APU-Off-line-Tracking-Sheet.xlsx");
@@ -33,7 +36,8 @@ function getUserPaths(userId) {
   return {
     inputXlsx: path.join(userDir, "input.xlsx"),
     timelogXlsx: path.join(userDir, "timelog.xlsx"),
-    apuXlsx: path.join(userDir, "APU_Tracking.xlsx")
+    apuXlsx: path.join(userDir, "APU_Tracking.xlsx"),
+    gitCommitsXlsx: path.join(userDir, "git_commits.xlsx")
   };
 }
 
@@ -168,7 +172,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
         }
       }
 
-      uniqueCommits.sort((a, b) => new Date(b.date) - new Date(a.date));
+      uniqueCommits.sort((a, b) => new Date(a.date) - new Date(b.date));
       return uniqueCommits;
 
     } catch (err) {
@@ -197,7 +201,8 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
           hours: 1,
           comments: item.commit.message,
           source_id: item.sha,
-          url: item.html_url
+          url: item.html_url,
+          branch: branch
         }));
       }
 
@@ -216,7 +221,8 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
           hours: 1,
           comments: item.commit.message,
           source_id: item.sha,
-          url: item.html_url
+          url: item.html_url,
+          branch: branch || "main"
         }));
       }
     } catch (searchErr) {
@@ -258,7 +264,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
           uniqueCommits.push(c);
         }
       }
-      uniqueCommits.sort((a, b) => new Date(b.date) - new Date(a.date));
+      uniqueCommits.sort((a, b) => new Date(a.date) - new Date(b.date));
       return uniqueCommits;
     } catch (err) {
       console.error("Event-based fallback also failed", err.message);
@@ -318,6 +324,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
         hours: DEFAULT_HOURS,
         comments: messageLine,
         source_id: item.sha,
+        branch: branch || "main"
       };
     })
     .filter((item) => item.date);
@@ -332,10 +339,10 @@ function readRows(filePath) {
   return XLSX.utils.sheet_to_json(sheet);
 }
 
-function writeRows(filePath, rows) {
+function writeRows(filePath, rows, headers = EXCEL_HEADERS, sheetName = "Tasks") {
   const workbook = XLSX.utils.book_new();
-  const sheet = XLSX.utils.json_to_sheet(rows, { header: EXCEL_HEADERS });
-  XLSX.utils.book_append_sheet(workbook, sheet, "Tasks");
+  const sheet = XLSX.utils.json_to_sheet(rows, { header: headers });
+  XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
   XLSX.writeFile(workbook, filePath);
 }
 
@@ -570,14 +577,74 @@ app.post("/api/github/commits", async (req, res) => {
       toDate: normalizedTo,
     });
 
-    const commitNames = entries.map(e => e.comments.replace("GitHub: ", ""));
+    const filteredEntries = entries; // No longer filtering merge commits, allowing AI to analyze them
+    const commitNames = filteredEntries.map(e => e.comments.replace("GitHub: ", ""));
+
+    // Automatically save fetched commits to a separate Excel file
+    const userId = req.headers["x-user-id"] || "global";
+    const paths = getUserPaths(userId);
+    let finalEntriesForExcel = [];
+    try {
+      const entriesForExcel = [];
+
+      // Enrich with AI summaries (with basic concurrency control)
+      console.log(`[api/github/commits] Enriching ${filteredEntries.length} commits with AI data...`);
+      for (const e of filteredEntries) {
+        let patch = "";
+        try {
+          // If we have owner/repo, fetch the diff
+          const [owner, repo] = resolvedOwner && resolvedRepo ? [resolvedOwner, resolvedRepo] : (e.url || "").match(/github\.com\/([^/]+)\/([^/]+)/)?.slice(1, 3) || [];
+          if (owner && repo) {
+            const commitDetail = await axios.get(`https://api.github.com/repos/${owner}/${repo}/commits/${e.source_id}`, {
+              headers: { Accept: "application/vnd.github+json", Authorization: token ? `Bearer ${token}` : undefined }
+            });
+            patch = (commitDetail.data.files || []).map(f => f.patch || "").join("\n").slice(0, 5000); // Limit context size
+          }
+        } catch (detailErr) {
+          console.warn(`[api/github/commits] Could not fetch patch for ${e.source_id}:`, detailErr.message);
+        }
+
+        const aiResult = await summarizeCommit(e.comments, patch);
+
+        // Enrich the original object for the JSON response fallback
+        e.ai_task = aiResult.taskTitle;
+        e.ai_type = aiResult.type;
+        e.ai_effort = aiResult.effort;
+
+        entriesForExcel.push({
+          "Date": e.date,
+          "Commit": e.comments,
+          "AI Task": aiResult.taskTitle,
+          "Type": aiResult.type,
+          "Effort": aiResult.effort,
+          "Source ID": e.source_id,
+          "Branch": e.branch
+        });
+      }
+
+      entriesForExcel.sort((a, b) => new Date(a.Date) - new Date(b.Date));
+      finalEntriesForExcel = normalizeDailyEffort(entriesForExcel);
+
+      writeRows(paths.gitCommitsXlsx, finalEntriesForExcel, COMMIT_EXCEL_HEADERS, "Commits");
+      console.log(`[api/github/commits] Saved ${finalEntriesForExcel.length} (normalized from ${entries.length}) commits to ${paths.gitCommitsXlsx}`);
+    } catch (saveErr) {
+      console.error(`[api/github/commits] Failed to save commits excel:`, saveErr.message);
+    }
 
     return res.json({
-      entries,
+      entries: finalEntriesForExcel.length > 0 ? finalEntriesForExcel.map(e => ({
+        date: e.Date,
+        comments: e.Commit,
+        source_id: e["Source ID"],
+        branch: e.Branch,
+        ai_task: e["AI Task"],
+        ai_type: e.Type,
+        ai_effort: e.Effort
+      })) : filteredEntries,
       commits: commitNames,
       fromDate: normalizedFrom,
       toDate: normalizedTo,
-      total: entries.length
+      total: finalEntriesForExcel.length > 0 ? finalEntriesForExcel.length : filteredEntries.length
     });
   } catch (error) {
     const ghStatus = error.response?.status || "";
@@ -838,6 +905,9 @@ app.get("/api/excel/download", (req, res) => {
   } else if (which === "timelog") {
     filePath = paths.timelogXlsx;
     fileName = "timelog.xlsx";
+  } else if (which === "commits") {
+    filePath = paths.gitCommitsXlsx;
+    fileName = "git_commits.xlsx";
   } else {
     filePath = paths.inputXlsx;
     fileName = "input.xlsx";

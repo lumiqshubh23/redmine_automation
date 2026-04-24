@@ -580,6 +580,9 @@ export default function App() {
             <button onClick={() => loadExcelPreview("timelog")}>
               <Eye size={18} /> Preview Spent Time
             </button>
+            <button className="primary" onClick={() => handleDownload("commits")}>
+              <Github size={18} /> Git Commits Excel
+            </button>
             <button className="primary" onClick={handleGenerateApu}>
               <Download size={18} /> Create & Download APU
             </button>
