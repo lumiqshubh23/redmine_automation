@@ -22,8 +22,8 @@ const REDMINE_ACTIVITY_ID = Number(process.env.REDMINE_ACTIVITY_ID || 9);
 
 const DEFAULT_ISSUE_ID = 158484;
 const DEFAULT_HOURS = 1;
-const EXCEL_HEADERS = ["date", "issue_id", "hours", "comments", "source_id"];
-const COMMIT_EXCEL_HEADERS = ["Date", "Commit", "AI Task", "Type", "Effort", "Source ID", "Branch"];
+const EXCEL_HEADERS = ["Date", "CR-DM-PDM ID", "Effort", "Type", "Activity Description", "source_id"];
+const COMMIT_EXCEL_HEADERS = ["Date", "Commit", "Activity Description", "Type", "Effort", "Source ID", "Branch"];
 const DATA_DIR = __dirname;
 const USER_DATA_BASE = path.join(DATA_DIR, "user_data");
 const TEMPLATE_APU = path.join(DATA_DIR, "APU-Off-line-Tracking-Sheet.xlsx");
@@ -105,15 +105,16 @@ function parseOwnerRepoFromRepository(ref) {
 
 function makeExcelKey(entry) {
   return [
-    normalizeExcelDate(entry.date) || "",
-    String(entry.issue_id || ""),
-    String(entry.hours || ""),
-    (entry.comments || "").trim(),
+    normalizeExcelDate(entry.Date || entry.date) || "",
+    String(entry["CR-DM-PDM ID"] || entry.issue_id || ""),
+    String(entry.Effort || entry.hours || ""),
+    (entry["Activity Description"] || entry.comments || "").trim(),
     String(entry.source_id || ""),
   ].join("|");
 }
 
-async function fetchCommits({ owner, repo, username, token, branch, fromDate, toDate }) {
+async function fetchCommits({ owner, repo, username, token, branch, fromDate, toDate, issueId }) {
+  const targetIssueId = issueId || 158484;
   const since = `${fromDate}T00:00:00Z`;
   const until = `${toDate}T23:59:59Z`;
   const headers = { Accept: "application/vnd.github+json" };
@@ -155,7 +156,8 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
             token,
             branch: targetBranch,
             fromDate,
-            toDate
+            toDate,
+            issueId: targetIssueId
           });
           allCommits.push(...commits);
         } catch (subErr) {
@@ -197,7 +199,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
       if (searchRes.data && searchRes.data.items && searchRes.data.items.length > 0) {
         return searchRes.data.items.map(item => ({
           date: item.commit.committer.date.slice(0, 10),
-          issue_id: 158484,
+          issue_id: targetIssueId,
           hours: 1,
           comments: item.commit.message,
           source_id: item.sha,
@@ -217,7 +219,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
       if (searchRes2.data && searchRes2.data.items && searchRes2.data.items.length > 0) {
         return searchRes2.data.items.map(item => ({
           date: item.commit.committer.date.slice(0, 10),
-          issue_id: 158484,
+          issue_id: targetIssueId,
           hours: 1,
           comments: item.commit.message,
           source_id: item.sha,
@@ -249,7 +251,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
       const allBranchCommits = [];
       for (const bName of activeBranches) {
         try {
-          const commits = await fetchCommits({ owner, repo, username, token, branch: bName, fromDate, toDate });
+          const commits = await fetchCommits({ owner, repo, username, token, branch: bName, fromDate, toDate, issueId: targetIssueId });
           allBranchCommits.push(...commits);
         } catch (err) {
           // branch might not exist
@@ -320,7 +322,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
       const messageLine = (item.commit?.message || "GitHub commit").split("\n")[0].trim();
       return {
         date: commitDate,
-        issue_id: DEFAULT_ISSUE_ID,
+        issue_id: targetIssueId,
         hours: DEFAULT_HOURS,
         comments: messageLine,
         source_id: item.sha,
@@ -371,10 +373,11 @@ function generateTimeLogRows({
 
     if (leaveDates.includes(date)) {
       finalData.push({
-        date,
-        issue_id: DEFAULT_ISSUE_ID,
-        hours: totalHours,
-        comments: "Leave",
+        "Date": date,
+        "CR-DM-PDM ID": DEFAULT_ISSUE_ID,
+        "Effort": totalHours,
+        "Type": "Leave",
+        "Activity Description": "Leave",
       });
       continue;
     }
@@ -384,20 +387,22 @@ function generateTimeLogRows({
       const row = rawData[taskIndex];
       const taskHours = Math.min(Math.floor(Math.random() * 4) + 1, remainingWork);
       finalData.push({
-        date,
-        issue_id: Number(row.issue_id) || DEFAULT_ISSUE_ID,
-        hours: taskHours,
-        comments: row.comments || "General Work",
+        "Date": date,
+        "CR-DM-PDM ID": Number(row.issue_id || row["CR-DM-PDM ID"]) || DEFAULT_ISSUE_ID,
+        "Effort": taskHours,
+        "Type": row.type || row.Type || "Development & Configuration",
+        "Activity Description": row.comments || row["Activity Description"] || "General Work",
       });
       remainingWork -= taskHours;
       taskIndex += 1;
     }
 
     finalData.push({
-      date,
-      issue_id: DEFAULT_ISSUE_ID,
-      hours: scrumHours,
-      comments: "Daily Scrum Call",
+      "Date": date,
+      "CR-DM-PDM ID": DEFAULT_ISSUE_ID,
+      "Effort": scrumHours,
+      "Type": "Daily SCRUM",
+      "Activity Description": "Daily Scrum Call",
     });
 
     if (taskIndex >= rawData.length) break;
@@ -424,9 +429,9 @@ async function uploadTimeEntriesToRedmine({
 
   for (const entry of rows) {
     try {
-      const spentOn = parseExcelDateToIso(entry.date);
-      const issueId = Number(entry.issue_id) || DEFAULT_ISSUE_ID;
-      const hours = Number(entry.hours);
+      const spentOn = parseExcelDateToIso(entry.Date || entry.date);
+      const issueId = Number(entry["CR-DM-PDM ID"] || entry.issue_id) || DEFAULT_ISSUE_ID;
+      const hours = Number(entry.Effort || entry.hours);
 
       if (!spentOn || !hours) {
         result.failed += 1;
@@ -440,7 +445,7 @@ async function uploadTimeEntriesToRedmine({
           time_entry: {
             issue_id: issueId,
             hours,
-            comments: entry.comments || "Auto log",
+            comments: entry["Activity Description"] || entry.comments || "Auto log",
             spent_on: spentOn,
             activity_id: REDMINE_ACTIVITY_ID,
           },
@@ -553,7 +558,8 @@ app.post("/api/github/validate", async (req, res) => {
 });
 
 app.post("/api/github/commits", async (req, res) => {
-  const { repository, owner, repo, username, token, branch, fromDate, toDate } = req.body || {};
+  const { repository, owner, repo, username, token, branch, fromDate, toDate, issueId } = req.body || {};
+  const targetIssueId = issueId || DEFAULT_ISSUE_ID;
 
   const parsed = parseOwnerRepoFromRepository(repository);
   const resolvedOwner = (owner || parsed?.owner || "").trim();
@@ -575,6 +581,7 @@ app.post("/api/github/commits", async (req, res) => {
       branch,
       fromDate: normalizedFrom,
       toDate: normalizedTo,
+      issueId: targetIssueId
     });
 
     const filteredEntries = entries; // No longer filtering merge commits, allowing AI to analyze them
@@ -605,16 +612,15 @@ app.post("/api/github/commits", async (req, res) => {
         }
 
         const aiResult = await summarizeCommit(e.comments, patch);
+        console.log(`[aiService] Result for ${e.source_id.slice(0, 7)}:`, aiResult.taskTitle);
 
         // Enrich the original object for the JSON response fallback
         e.ai_task = aiResult.taskTitle;
         e.ai_type = aiResult.type;
-        e.ai_effort = aiResult.effort;
-
         entriesForExcel.push({
           "Date": e.date,
           "Commit": e.comments,
-          "AI Task": aiResult.taskTitle,
+          "Activity Description": aiResult.taskTitle,
           "Type": aiResult.type,
           "Effort": aiResult.effort,
           "Source ID": e.source_id,
@@ -633,13 +639,13 @@ app.post("/api/github/commits", async (req, res) => {
 
     return res.json({
       entries: finalEntriesForExcel.length > 0 ? finalEntriesForExcel.map(e => ({
-        date: e.Date,
-        comments: e.Commit,
-        source_id: e["Source ID"],
-        branch: e.Branch,
-        ai_task: e["AI Task"],
-        ai_type: e.Type,
-        ai_effort: e.Effort
+        date: e.Date || e.date,
+        comments: e.Commit || e.comments,
+        source_id: e["Source ID"] || e.source_id,
+        branch: e.Branch || e.branch,
+        ai_task: e["Activity Description"] || e["AI Task"] || e.ai_task,
+        hours: e.Effort || e.hours,
+        type: e.Type || e.type
       })) : filteredEntries,
       commits: commitNames,
       fromDate: normalizedFrom,
@@ -657,7 +663,10 @@ app.get("/api/excel/preview", (req, res) => {
   const which = String(req.query.which || "input").toLowerCase();
   const userId = req.headers["x-user-id"] || "global";
   const paths = getUserPaths(userId);
-  const filePath = which === "timelog" ? paths.timelogXlsx : paths.inputXlsx;
+  let filePath;
+  if (which === "timelog") filePath = paths.timelogXlsx;
+  else if (which === "commits") filePath = paths.gitCommitsXlsx;
+  else filePath = paths.inputXlsx;
 
   try {
     if (!fs.existsSync(filePath)) {
@@ -669,8 +678,27 @@ app.get("/api/excel/preview", (req, res) => {
       return res.json({ which, columns: [], rows: [], empty: true });
     }
     const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet);
-    const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+    let rows = XLSX.utils.sheet_to_json(sheet);
+
+    if (which === "commits" && rows.length > 0) {
+      rows = rows.map(row => {
+        const r = { ...row };
+        // Sync "Activity Description" and "AI Task" for display consistency
+        const aiVal = r["Activity Description"] || r["AI Task"] || r.ai_task;
+        if (aiVal) {
+          r["Activity Description"] = aiVal;
+          r["AI Task"] = aiVal;
+        }
+        return r;
+      });
+    }
+
+    let columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+
+    if (which === "commits") {
+      columns = columns.filter(col => !["AI Task", "Branch", "Source ID", "ai_task", "source_id", "branch"].includes(col));
+    }
+
     return res.json({
       which,
       columns,
@@ -699,14 +727,15 @@ app.post("/api/excel/save", (req, res) => {
 
     for (const entry of entries) {
       const normalized = {
-        date: normalizeExcelDate(entry.date),
-        issue_id: Number(entry.issue_id) || DEFAULT_ISSUE_ID,
-        hours: Number(entry.hours) || DEFAULT_HOURS,
-        comments: (entry.comments || "").trim() || "General Work",
-        source_id: entry.source_id || "",
+        "Date": normalizeExcelDate(entry.Date || entry.date),
+        "CR-DM-PDM ID": Number(entry["CR-DM-PDM ID"] || entry.issue_id) || DEFAULT_ISSUE_ID,
+        "Effort": Number(entry.Effort || entry.hours) || DEFAULT_HOURS,
+        "Type": entry.Type || entry.type || (String(entry["Activity Description"] || entry.comments).includes("Daily Scrum") ? "Daily SCRUM" : "Development & Configuration"),
+        "Activity Description": (entry["Activity Description"] || entry.comments || "").trim() || "General Work",
+        "source_id": entry.source_id || "",
       };
 
-      if (!normalized.date) continue;
+      if (!normalized.Date) continue;
       const key = makeExcelKey(normalized);
       if (existingKeys.has(key)) continue;
       existingKeys.add(key);
@@ -839,19 +868,17 @@ app.post("/api/excel/generate-apu", (req, res) => {
     const timelogData = XLSX.utils.sheet_to_json(timelogWb.Sheets[timelogWb.SheetNames[0]]);
 
     const apuRows = timelogData.map((row, index) => {
-      const isScrum = String(row.comments || "").includes("Daily Scrum Call");
-
       // Map to the 9 Columns exactly
       return {
         "S No": index + 1,
         "Resource Name": "", // Placeholder for user
         "Resource ID": "",   // Placeholder for user
-        "Activity Date": normalizeExcelDate(row.date),
-        "CR-DM-PDM ID": row.issue_id || row.id || "",
+        "Activity Date": normalizeExcelDate(row.Date || row.date),
+        "CR-DM-PDM ID": row["CR-DM-PDM ID"] || row.issue_id || "",
         "Role": "",          // Placeholder for user
-        "Activity Name": isScrum ? "Daily SCRUM" : "Development & Configuration",
-        "Time Spent(In Hours)": row.hours || 0,
-        "Activity Description": row.comments || ""
+        "Activity Name": row.Type || (String(row["Activity Description"] || row.comments).includes("Daily Scrum") ? "Daily SCRUM" : "Development & Configuration"),
+        "Time Spent(In Hours)": row.Effort || row.hours || 0,
+        "Activity Description": row["Activity Description"] || row.comments || ""
       };
     });
 
@@ -954,4 +981,20 @@ process.on("SIGINT", () => {
 
 process.on("SIGTERM", () => {
   server.close(() => process.exit(0));
+});
+
+app.post("/api/excel/clear", (req, res) => {
+  const userId = req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
+  try {
+    if (fs.existsSync(paths.gitCommitsXlsx)) {
+      fs.unlinkSync(paths.gitCommitsXlsx);
+    }
+    // Also clear other temporary files if they exist
+    if (fs.existsSync(paths.timelogXlsx)) fs.unlinkSync(paths.timelogXlsx);
+    
+    res.json({ message: "Workspace cleared successfully." });
+  } catch (err) {
+    res.status(500).json({ error: "Could not clear workspace: " + err.message });
+  }
 });

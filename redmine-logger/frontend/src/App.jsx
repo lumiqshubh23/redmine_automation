@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, Reorder } from "framer-motion";
 import {
   Github,
   Hash,
@@ -19,14 +19,15 @@ import {
   Eye,
   CheckCircle2,
   AlertCircle,
-  Loader2
+  Loader2,
+  GripVertical
 } from "lucide-react";
 
 const API_BASE = "";
 
-const emptyRow = () => ({
+const emptyRow = (issueId) => ({
   date: new Date().toISOString().slice(0, 10),
-  issue_id: 158484,
+  issue_id: issueId || 158484,
   hours: 1,
   comments: "Manual task",
   source_id: "",
@@ -47,6 +48,7 @@ export default function App() {
     toDate: "",
     redmineUrl: "",
     redmineApiKey: "",
+    issueId: "158484",
   });
   const [github, setGithub] = useState(() => {
     const saved = sessionStorage.getItem("github_config");
@@ -59,6 +61,7 @@ export default function App() {
   const [rows, setRows] = useState([]);
   const [status, setStatus] = useState({ text: "Ready.", error: false, loading: false });
   const [excelPreview, setExcelPreview] = useState(null);
+  const [confirmModal, setConfirmModal] = useState(null);
 
   const getUserId = () => {
     return github.user?.login || (redmine.user?.id ? `rm_${redmine.user.id}` : "anonymous");
@@ -96,6 +99,7 @@ export default function App() {
       }
     }
     loadDefaults();
+    handleClearWorkspace(false); // Clear backend workspace on refresh
   }, []);
 
   function setField(key, value) {
@@ -222,6 +226,7 @@ export default function App() {
           branch: form.branch.trim(),
           fromDate: form.fromDate,
           toDate: form.toDate,
+          issueId: form.issueId.trim(),
         }),
       });
       const data = await res.json();
@@ -269,7 +274,7 @@ export default function App() {
       if (!buildRes.ok) throw new Error("Auto-build failed.");
 
       setMessage("All tasks synced and timelog updated!");
-      setTimeout(() => loadExcelPreview("timelog"), 500);
+      setTimeout(() => loadExcelPreview("commits"), 500);
     } catch (err) {
       setMessage(err.message, true);
     }
@@ -326,27 +331,88 @@ export default function App() {
   }
 
   async function handleUploadRedmine() {
-    setMessage("Uploading logs to Redmine...", false, true);
-    try {
-      const res = await fetch(`${API_BASE}/api/redmine/upload`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-user-id": getUserId()
-        },
-        body: JSON.stringify({
-          redmineUrl: redmine.url,
-          redmineApiKey: redmine.apiKey
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setMessage(data.error || "Could not upload logs.", true);
-        return;
+    if (!excelPreview || !excelPreview.rows || excelPreview.rows.length === 0) {
+      setMessage("No data in preview to log.", true);
+      return;
+    }
+
+    setConfirmModal({
+      title: "Confirm Redmine Upload",
+      message: `You are about to push ${excelPreview.rows.length} task logs to Redmine. This will create live time entries on your account.`,
+      confirmText: "Push to Redmine",
+      confirmClass: "success",
+      onConfirm: async () => {
+        setConfirmModal(null);
+        setMessage("Initializing Redmine Upload...", false, true);
+        setStatus({ text: "Logging to Redmine...", error: false, loading: true });
+        
+        try {
+          const res = await fetch(`${API_BASE}/api/redmine/upload`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-user-id": getUserId()
+            },
+            body: JSON.stringify({
+              redmineUrl: redmine.url,
+              redmineApiKey: redmine.apiKey
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            setMessage(data.error || "Could not upload logs.", true);
+            setStatus({ text: "Upload Failed", error: true, loading: false });
+            return;
+          }
+
+          setMessage(`Success! Logged ${data.success} entries. Workspace cleared.`);
+          setStatus({ text: "Upload Complete", error: false, loading: false });
+          await handleClearWorkspace(false); 
+        } catch (error) {
+          setMessage(error.message || "Redmine upload failed.", true);
+          setStatus({ text: "Upload Error", error: true, loading: false });
+        }
       }
-      setMessage(`Upload done. Success: ${data.success}, Failed: ${data.failed}.`);
-    } catch (error) {
-      setMessage(error.message || "Redmine upload failed.", true);
+    });
+  }
+
+  async function handleClearWorkspace(showConfirm = true) {
+    if (showConfirm) {
+      setConfirmModal({
+        title: "Clear Workspace",
+        message: "Are you sure you want to clear your current workspace? This will delete the temporary Excel files and reset your preview.",
+        confirmText: "Clear All",
+        confirmClass: "delete-btn",
+        onConfirm: async () => {
+          setConfirmModal(null);
+          try {
+            const res = await fetch(`${API_BASE}/api/excel/clear`, {
+              method: "POST",
+              headers: { "x-user-id": getUserId() }
+            });
+            if (res.ok) {
+              setRows([]);
+              setExcelPreview(null);
+              setMessage("Workspace cleared.");
+            }
+          } catch (err) {
+            console.error("Clear failed", err);
+          }
+        }
+      });
+      return;
+    }
+
+    // Direct clear (no modal)
+    try {
+      await fetch(`${API_BASE}/api/excel/clear`, {
+        method: "POST",
+        headers: { "x-user-id": getUserId() }
+      });
+      setRows([]);
+      setExcelPreview(null);
+    } catch (err) {
+      console.error("Clear failed", err);
     }
   }
 
@@ -534,14 +600,14 @@ export default function App() {
               <label>
                 Until <input type="date" value={form.toDate} onChange={(e) => setField("toDate", e.target.value)} />
               </label>
+              <label>
+                Target Issue ID <input value={form.issueId} onChange={(e) => setField("issueId", e.target.value)} placeholder="158484" />
+              </label>
             </div>
 
             <div className="actions">
               <button className="primary" onClick={handleImport}>
                 <RefreshCw size={18} className={status.loading ? "animate-spin" : ""} /> Import & Sync
-              </button>
-              <button onClick={() => setRows((prev) => [...prev, emptyRow()])}>
-                <Plus size={18} /> Add Manual Row
               </button>
               {redmine.connected && (
                 <button className="success" onClick={handleUploadRedmine}>
@@ -577,8 +643,8 @@ export default function App() {
         >
           <h2><FileText size={24} color="#a78bfa" /> Document Center</h2>
           <div className="actions">
-            <button onClick={() => loadExcelPreview("timelog")}>
-              <Eye size={18} /> Preview Spent Time
+            <button onClick={() => loadExcelPreview("commits")}>
+              <Eye size={18} /> Preview Git Commits
             </button>
             <button className="primary" onClick={() => handleDownload("commits")}>
               <Github size={18} /> Git Commits Excel
@@ -600,34 +666,137 @@ export default function App() {
                   {excelPreview.empty ? (
                     <p className="muted" style={{ padding: "20px" }}>This sheet is currently empty.</p>
                   ) : (
-                    <table>
-                      <thead>
-                        <tr>
-                          {excelPreview.columns.map((col) => (
-                            <th key={col}>{col}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {excelPreview.rows.map((row, idx) => (
-                          <tr key={idx}>
-                            {excelPreview.columns.map((col) => (
-                              <td key={col}>
-                                <input
-                                  value={row[col] != null ? String(row[col]) : ""}
-                                  onChange={(e) => {
-                                    const nextRows = [...excelPreview.rows];
-                                    nextRows[idx] = { ...nextRows[idx], [col]: e.target.value };
-                                    setExcelPreview({ ...excelPreview, rows: nextRows });
-                                  }}
-                                  className="inline-input"
-                                />
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <>
+                      <div className="preview-actions" style={{ padding: "12px", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                         <button className="text-btn" onClick={() => handleClearWorkspace(true)} style={{ marginRight: "auto", textDecoration: "none", color: "var(--error)" }}>
+                            <Trash2 size={16} /> Clear Workspace
+                         </button>
+                         <button onClick={() => {
+                            const newRow = { "issue_id": form.issueId };
+                            excelPreview.columns.forEach(col => {
+                               if (col === "Date") newRow[col] = new Date().toISOString().split('T')[0];
+                               else if (col !== "issue_id") newRow[col] = "";
+                            });
+                            setExcelPreview({ ...excelPreview, rows: [newRow, ...excelPreview.rows] });
+                         }}>
+                            <Plus size={16} /> Add Row
+                         </button>
+                         <button className="success" onClick={handleUpdateExcel}>
+                            <Save size={16} /> Save Changes to Excel
+                         </button>
+                      </div>
+                       <Reorder.Group 
+                         axis="y" 
+                         values={excelPreview.rows} 
+                         onReorder={(next) => setExcelPreview({ ...excelPreview, rows: next })}
+                         className="task-list"
+                       >
+                         {excelPreview.rows.map((row, idx) => (
+                           <Reorder.Item 
+                             key={row.source_id || `row-${idx}`} 
+                             value={row}
+                             className="task-card"
+                             whileDrag={{ 
+                               scale: 1.05,
+                               boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
+                               zIndex: 100,
+                               backgroundColor: "rgba(30, 41, 59, 0.9)"
+                             }}
+                           >
+                             <div className="drag-handle">
+                               <GripVertical size={20} />
+                             </div>
+
+                             <div className="field-group">
+                               <span className="label">Date, Type & Issue</span>
+                               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                                 <input
+                                   value={row["Date"] || ""}
+                                   onChange={(e) => {
+                                     const nextRows = [...excelPreview.rows];
+                                     nextRows[idx] = { ...nextRows[idx], "Date": e.target.value };
+                                     setExcelPreview({ ...excelPreview, rows: nextRows });
+                                   }}
+                                   className="inline-input"
+                                   style={{ width: "90px", fontSize: "12px" }}
+                                 />
+                                 <input
+                                   value={row["issue_id"] || row["Issue ID"] || ""}
+                                   onChange={(e) => {
+                                     const nextRows = [...excelPreview.rows];
+                                     nextRows[idx] = { ...nextRows[idx], "issue_id": e.target.value };
+                                     setExcelPreview({ ...excelPreview, rows: nextRows });
+                                   }}
+                                   className="inline-input"
+                                   style={{ width: "70px", fontSize: "11px", fontWeight: "bold", color: "var(--primary)" }}
+                                 />
+                                 <input
+                                   value={row["Type"] || ""}
+                                   onChange={(e) => {
+                                     const nextRows = [...excelPreview.rows];
+                                     nextRows[idx] = { ...nextRows[idx], "Type": e.target.value };
+                                     setExcelPreview({ ...excelPreview, rows: nextRows });
+                                   }}
+                                   className="inline-input"
+                                   style={{ width: "80px", fontSize: "11px", color: "var(--text-muted)" }}
+                                 />
+                               </div>
+                             </div>
+
+                             <div className="field-group">
+                               <span className="label">Commit & Description</span>
+                               <input
+                                 value={row["Commit"] || ""}
+                                 onChange={(e) => {
+                                   const nextRows = [...excelPreview.rows];
+                                   nextRows[idx] = { ...nextRows[idx], "Commit": e.target.value };
+                                   setExcelPreview({ ...excelPreview, rows: nextRows });
+                                 }}
+                                 className="inline-input"
+                                 style={{ fontWeight: "700", color: "#60a5fa" }}
+                               />
+                               <input
+                                 value={row["Activity Description"] || ""}
+                                 onChange={(e) => {
+                                   const nextRows = [...excelPreview.rows];
+                                   nextRows[idx] = { ...nextRows[idx], "Activity Description": e.target.value };
+                                   setExcelPreview({ ...excelPreview, rows: nextRows });
+                                 }}
+                                 className="inline-input"
+                                 style={{ fontWeight: "600", fontSize: "14px", color: "var(--text-main)" }}
+                               />
+                             </div>
+
+                             <div className="field-group" style={{ alignItems: "center" }}>
+                               <span className="label">Effort</span>
+                               <input
+                                 value={row["Effort"] || ""}
+                                 onChange={(e) => {
+                                   const nextRows = [...excelPreview.rows];
+                                   nextRows[idx] = { ...nextRows[idx], "Effort": e.target.value };
+                                   setExcelPreview({ ...excelPreview, rows: nextRows });
+                                 }}
+                                 className="inline-input effort-badge"
+                                 style={{ width: "50px" }}
+                               />
+                             </div>
+
+                             <div className="actions-cell">
+                               <button 
+                                 className="delete-btn" 
+                                 onClick={() => {
+                                   const nextRows = excelPreview.rows.filter((_, i) => i !== idx);
+                                   setExcelPreview({ ...excelPreview, rows: nextRows });
+                                 }}
+                                 title="Delete Row"
+                               >
+                                 <Trash2 size={18} />
+                               </button>
+                             </div>
+                           </Reorder.Item>
+                         ))}
+                       </Reorder.Group>
+                    </>
                   )}
                 </div>
               </motion.div>
@@ -651,9 +820,72 @@ export default function App() {
         */}
       </div>
 
-      <footer className="footer-credits">
-        Built  by <span className="author">Shubham Kumar</span>
-      </footer>
+       <footer className="footer-credits">
+         Built  by <span className="author">Shubham Kumar</span>
+       </footer>
+
+       <AnimatePresence>
+         {status.loading && status.text.includes("Redmine") && (
+           <motion.div 
+             className="logging-overlay"
+             initial={{ opacity: 0 }}
+             animate={{ opacity: 1 }}
+             exit={{ opacity: 0 }}
+           >
+             <motion.div 
+               className="logging-card"
+               initial={{ scale: 0.8, y: 20 }}
+               animate={{ scale: 1, y: 0 }}
+               exit={{ scale: 0.8, y: 20 }}
+             >
+               <Loader2 className="animate-spin" size={48} color="#10b981" />
+               <h3>Syncing with Redmine</h3>
+               <p>Your tasks are being logged as time entries.</p>
+               <div className="logging-progress-bar">
+                 <div className="logging-progress-fill"></div>
+               </div>
+               <p style={{ fontSize: "12px", marginTop: "10px" }}>This may take a moment...</p>
+             </motion.div>
+           </motion.div>
+         )}
+       </AnimatePresence>
+
+       <AnimatePresence>
+         {confirmModal && (
+           <motion.div 
+             className="logging-overlay"
+             initial={{ opacity: 0 }}
+             animate={{ opacity: 1 }}
+             exit={{ opacity: 0 }}
+             onClick={() => setConfirmModal(null)}
+             style={{ zIndex: 1100 }}
+           >
+             <motion.div 
+               className="logging-card confirm-modal"
+               initial={{ scale: 0.9, opacity: 0 }}
+               animate={{ scale: 1, opacity: 1 }}
+               exit={{ scale: 0.9, opacity: 0 }}
+               onClick={(e) => e.stopPropagation()}
+               style={{ maxWidth: "450px" }}
+             >
+               <AlertCircle size={48} color={confirmModal.confirmClass === 'delete-btn' ? '#f43f5e' : '#10b981'} />
+               <h3>{confirmModal.title}</h3>
+               <p style={{ marginTop: "10px" }}>{confirmModal.message}</p>
+               <div className="actions" style={{ marginTop: "24px", width: "100%", justifyContent: "center", gap: "12px" }}>
+                 <button 
+                   onClick={() => setConfirmModal(null)}
+                   style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)" }}
+                 >
+                   Cancel
+                 </button>
+                 <button className={confirmModal.confirmClass} onClick={confirmModal.onConfirm}>
+                   {confirmModal.confirmText}
+                 </button>
+               </div>
+             </motion.div>
+           </motion.div>
+         )}
+       </AnimatePresence>
 
       <style>{`
         .animate-spin { animation: spin 1s linear infinite; }
