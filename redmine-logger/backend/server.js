@@ -329,7 +329,7 @@ async function fetchCommits({ owner, repo, username, token, branch, fromDate, to
         branch: branch || "main"
       };
     })
-    .filter((item) => item.date);
+    .filter((item) => item.date && !item.comments.toLowerCase().startsWith("merge"));
 }
 
 function readRows(filePath) {
@@ -584,7 +584,7 @@ app.post("/api/github/commits", async (req, res) => {
       issueId: targetIssueId
     });
 
-    const filteredEntries = entries; // No longer filtering merge commits, allowing AI to analyze them
+    const filteredEntries = entries.filter(e => !e.comments.toLowerCase().startsWith("merge"));
     const commitNames = filteredEntries.map(e => e.comments.replace("GitHub: ", ""));
 
     // Automatically save fetched commits to a separate Excel file
@@ -655,8 +655,10 @@ app.post("/api/github/commits", async (req, res) => {
       // 1. Add existing commits (excluding auto-generated Scrum rows)
       existingCommits.forEach(c => {
         const sid = c["Source ID"] || c.source_id;
+        const commitMsg = c["Commit"] || c.comments || "";
         // Skip Scrum rows as they will be re-added during normalization
-        if (sid && sid !== "N/A" && c["Commit"] !== "Daily Scrum Call") {
+        // Also skip merge commits
+        if (sid && sid !== "N/A" && c["Commit"] !== "Daily Scrum Call" && !commitMsg.toLowerCase().startsWith("merge")) {
           allCommitsMap.set(sid, c);
         }
       });
@@ -765,11 +767,17 @@ app.post("/api/excel/save", (req, res) => {
   }
 
   try {
-    const currentRows = readRows(targetPath);
+    const currentRows = readRows(targetPath).filter(r => {
+      const desc = String(r["Activity Description"] || r.comments || r.Commit || "");
+      return !desc.toLowerCase().startsWith("merge");
+    });
     const existingKeys = new Set(currentRows.map(makeExcelKey));
     const cleanNewRows = [];
 
     for (const entry of entries) {
+      const desc = String(entry["Activity Description"] || entry.comments || entry.Commit || "");
+      if (desc.toLowerCase().startsWith("merge")) continue;
+
       const normalized = {
         "Date": normalizeExcelDate(entry.Date || entry.date),
         "CR-DM-PDM ID": Number(entry["CR-DM-PDM ID"] || entry.issue_id) || DEFAULT_ISSUE_ID,

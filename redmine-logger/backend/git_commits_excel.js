@@ -68,7 +68,7 @@ function fetchLocalCommits({ fromDate, toDate }) {
                 source_id: sha,
                 branch: branchName
             };
-        });
+        }).filter(e => !e.comments.toLowerCase().startsWith("merge"));
     } catch (error) {
         console.error("Failed to fetch local commits:", error.message);
         return [];
