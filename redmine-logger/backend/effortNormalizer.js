@@ -50,12 +50,13 @@ function normalizeDailyEffort(entries) {
             const c = dayCommits[i];
             const weight = (Number(c.Effort) || 1) / totalAiEffort;
 
-            // For the last item, give it the exact mathematical remainder to avoid rounding drift
+            // Distribute as whole integers, give remainder to last entry
             let allocated;
             if (i === dayCommits.length - 1) {
-                allocated = Math.round((remainingTarget - distributedSoFar) * 100) / 100;
+                allocated = remainingTarget - distributedSoFar;
             } else {
-                allocated = Math.round((8 * weight) * 100) / 100;
+                allocated = Math.floor(8 * weight);
+                if (allocated < 1) allocated = 1; // minimum 1 hour
                 distributedSoFar += allocated;
             }
 

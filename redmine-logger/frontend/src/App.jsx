@@ -40,7 +40,7 @@ const cardVariants = {
 
 export default function App() {
   const [form, setForm] = useState({
-    repository: "",
+    repositories: [],
     token: "",
     username: "",
     branch: "",
@@ -50,6 +50,7 @@ export default function App() {
     redmineApiKey: "",
     issueId: "158484",
   });
+  const [repoInput, setRepoInput] = useState("");
   const [github, setGithub] = useState(() => {
     const saved = sessionStorage.getItem("github_config");
     return saved ? JSON.parse(saved) : { connected: false, username: "", token: "", user: null };
@@ -229,8 +230,8 @@ export default function App() {
           "Content-Type": "application/json",
           "x-user-id": getUserId()
         },
-        body: JSON.stringify({
-          repository: form.repository.trim(),
+      body: JSON.stringify({
+          repositories: form.repositories,
           username: github.username,
           token: github.token,
           branch: form.branch.trim(),
@@ -341,23 +342,34 @@ export default function App() {
   }
 
   async function handleUploadRedmine() {
-    if (!excelPreview || !excelPreview.rows || excelPreview.rows.length === 0) {
-      setMessage("No data in preview to log.", true);
-      return;
-    }
-
     setConfirmModal({
       title: "Confirm Redmine Upload",
-      message: `You are about to push ${excelPreview.rows.length} task logs to Redmine. This will create live time entries on your account.`,
+      message: `This will generate the APU sheet from your git commits and push all entries to Redmine as time logs.`,
       confirmText: "Push to Redmine",
       confirmClass: "success",
       onConfirm: async () => {
         setConfirmModal(null);
-        setMessage("Initializing Redmine Upload...", false, true);
-        setStatus({ text: "Logging to Redmine...", error: false, loading: true });
-        
+
+        // Step 1: Generate APU from git commits
+        setMessage("Generating APU sheet...", false, true);
         try {
-          const res = await fetch(`${API_BASE}/api/redmine/upload`, {
+          const apuRes = await fetch(`${API_BASE}/api/excel/generate-apu`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-user-id": getUserId()
+            },
+            body: JSON.stringify({}),
+          });
+          const apuData = await apuRes.json();
+          if (!apuRes.ok) {
+            setMessage(apuData.error || "APU generation failed.", true);
+            return;
+          }
+
+          // Step 2: Push APU to Redmine
+          setMessage(`APU ready (${apuData.rows} rows). Logging to Redmine...`, false, true);
+          const res = await fetch(`${API_BASE}/api/redmine/upload-apu`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -366,22 +378,17 @@ export default function App() {
             body: JSON.stringify({
               redmineUrl: redmine.url,
               redmineApiKey: redmine.apiKey,
-              rows: excelPreview.rows
             }),
           });
           const data = await res.json();
           if (!res.ok) {
             setMessage(data.error || "Could not upload logs.", true);
-            setStatus({ text: "Upload Failed", error: true, loading: false });
             return;
           }
 
-          setMessage(`Success! Logged ${data.success} entries. Workspace cleared.`);
-          setStatus({ text: "Upload Complete", error: false, loading: false });
-          await handleClearWorkspace(false); 
+          setMessage(`Success! Logged ${data.success} entries to Redmine (${data.failed} failed).`);
         } catch (error) {
           setMessage(error.message || "Redmine upload failed.", true);
-          setStatus({ text: "Upload Error", error: true, loading: false });
         }
       }
     });
@@ -642,7 +649,62 @@ export default function App() {
             <h2><Layout size={24} color="#60a5fa" /> Sync Workspace</h2>
             <div className="grid">
               <label className="span-2">
-                Repository <input value={form.repository} onChange={(e) => setField("repository", e.target.value)} placeholder="owner/repo (optional)" />
+                Repositories
+                <div style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
+                  <input
+                    id="repo-input"
+                    value={repoInput}
+                    onChange={(e) => setRepoInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if ((e.key === "Enter" || e.key === ",") && repoInput.trim()) {
+                        e.preventDefault();
+                        const val = repoInput.trim().replace(/,$/, "");
+                        if (val && !form.repositories.includes(val)) {
+                          setForm(prev => ({ ...prev, repositories: [...prev.repositories, val] }));
+                        }
+                        setRepoInput("");
+                      }
+                    }}
+                    placeholder="owner/repo — press Enter to add"
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    className="primary"
+                    style={{ padding: "0 14px", whiteSpace: "nowrap", fontSize: "13px" }}
+                    onClick={() => {
+                      const val = repoInput.trim();
+                      if (val && !form.repositories.includes(val)) {
+                        setForm(prev => ({ ...prev, repositories: [...prev.repositories, val] }));
+                      }
+                      setRepoInput("");
+                    }}
+                  >
+                    <Plus size={14} /> Add
+                  </button>
+                </div>
+                {form.repositories.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
+                    {form.repositories.map((r, i) => (
+                      <span key={i} style={{
+                        display: "inline-flex", alignItems: "center", gap: "6px",
+                        background: "rgba(96,165,250,0.15)", border: "1px solid rgba(96,165,250,0.35)",
+                        borderRadius: "6px", padding: "3px 10px", fontSize: "12px", color: "#93c5fd"
+                      }}>
+                        <Github size={11} />
+                        {r}
+                        <button
+                          type="button"
+                          onClick={() => setForm(prev => ({ ...prev, repositories: prev.repositories.filter((_, j) => j !== i) }))}
+                          style={{ background: "none", border: "none", cursor: "pointer", color: "#f87171", padding: 0, lineHeight: 1 }}
+                          title="Remove"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </label>
               <label>
                 Branch <input value={form.branch} onChange={(e) => setField("branch", e.target.value)} placeholder="main" />

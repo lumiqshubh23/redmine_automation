@@ -558,12 +558,8 @@ app.post("/api/github/validate", async (req, res) => {
 });
 
 app.post("/api/github/commits", async (req, res) => {
-  const { repository, owner, repo, username, token, branch, fromDate, toDate, issueId } = req.body || {};
+  const { repository, repositories, owner, repo, username, token, branch, fromDate, toDate, issueId } = req.body || {};
   const targetIssueId = issueId || DEFAULT_ISSUE_ID;
-
-  const parsed = parseOwnerRepoFromRepository(repository);
-  const resolvedOwner = (owner || parsed?.owner || "").trim();
-  const resolvedRepo = (repo || parsed?.repo || "").trim();
 
   if (!username) {
     return res.status(400).json({ error: "GitHub username is required." });
@@ -572,51 +568,79 @@ app.post("/api/github/commits", async (req, res) => {
   const normalizedFrom = toDateOnly(fromDate) || firstDayOfCurrentMonth();
   const normalizedTo = toDateOnly(toDate) || todayDate();
 
+  // Build a de-duplicated list of {owner, repo} pairs to process
+  const repoList = [];
+  const seenRepos = new Set();
+  const repoInputs = Array.isArray(repositories) && repositories.length > 0
+    ? repositories
+    : [repository || `${owner || ""}/${repo || ""}`];
+
+  for (const ref of repoInputs) {
+    if (!ref || !String(ref).trim()) continue;
+    const parsed = parseOwnerRepoFromRepository(ref);
+    if (!parsed) continue;
+    const key = `${parsed.owner}/${parsed.repo}`.toLowerCase();
+    if (!seenRepos.has(key)) {
+      seenRepos.add(key);
+      repoList.push(parsed);
+    }
+  }
+
+  const userId = req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
+
   try {
-    const entries = await fetchCommits({
-      owner: resolvedOwner,
-      repo: resolvedRepo,
-      username,
-      token,
-      branch,
-      fromDate: normalizedFrom,
-      toDate: normalizedTo,
-      issueId: targetIssueId
-    });
+    // Accumulate filtered entries across all repos
+    const allFilteredEntries = [];
+    const allCommitNames = [];
 
-    const filteredEntries = entries.filter(e => !e.comments.toLowerCase().startsWith("merge"));
-    const commitNames = filteredEntries.map(e => e.comments.replace("GitHub: ", ""));
+    for (const { owner: rOwner, repo: rRepo } of repoList) {
+      console.log(`[api/github/commits] Fetching commits for ${rOwner}/${rRepo}...`);
+      try {
+        const entries = await fetchCommits({
+          owner: rOwner,
+          repo: rRepo,
+          username,
+          token,
+          branch,
+          fromDate: normalizedFrom,
+          toDate: normalizedTo,
+          issueId: targetIssueId
+        });
+        // Tag with repo info for diff fetching, filter merge commits
+        const filtered = entries
+          .filter(e => !e.comments.toLowerCase().startsWith("merge"))
+          .map(e => ({ ...e, repoOwner: rOwner, repoName: rRepo }));
+        allFilteredEntries.push(...filtered);
+        allCommitNames.push(...filtered.map(e => e.comments.replace("GitHub: ", "")));
+        console.log(`[api/github/commits] Got ${filtered.length} commits from ${rOwner}/${rRepo}`);
+      } catch (repoErr) {
+        console.error(`[api/github/commits] Failed for ${rOwner}/${rRepo}:`, repoErr.message);
+      }
+    }
 
-    // Automatically save fetched commits to a separate Excel file
-    const userId = req.headers["x-user-id"] || "global";
-    const paths = getUserPaths(userId);
     let finalEntriesForExcel = [];
     try {
       const entriesForExcel = [];
 
-      // Enrich with AI summaries (with basic concurrency control)
-      console.log(`[api/github/commits] Enriching ${filteredEntries.length} commits with AI data...`);
-      for (const e of filteredEntries) {
+      console.log(`[api/github/commits] Enriching ${allFilteredEntries.length} commits across ${repoList.length} repo(s)...`);
+      for (const e of allFilteredEntries) {
         let patch = "";
         try {
-          // If we have owner/repo, fetch the diff
-          const [owner, repo] = resolvedOwner && resolvedRepo ? [resolvedOwner, resolvedRepo] : (e.url || "").match(/github\.com\/([^/]+)\/([^/]+)/)?.slice(1, 3) || [];
-          if (owner && repo) {
-            const commitDetail = await axios.get(`https://api.github.com/repos/${owner}/${repo}/commits/${e.source_id}`, {
+          const commitOwner = e.repoOwner;
+          const commitRepo = e.repoName;
+          if (commitOwner && commitRepo) {
+            const commitDetail = await axios.get(`https://api.github.com/repos/${commitOwner}/${commitRepo}/commits/${e.source_id}`, {
               headers: { Accept: "application/vnd.github+json", Authorization: token ? `Bearer ${token}` : undefined }
             });
-
             const parents = commitDetail.data.parents || [];
             if (parents.length > 1) {
-              // It's a merge commit. Fetch the actual changes by comparing with the first parent.
-              console.log(`[api/github/commits] ${e.source_id.slice(0, 7)} is a merge. Fetching comparison with ${parents[0].sha.slice(0, 7)}...`);
               try {
-                const compareRes = await axios.get(`https://api.github.com/repos/${owner}/${repo}/compare/${parents[0].sha}...${e.source_id}`, {
+                const compareRes = await axios.get(`https://api.github.com/repos/${commitOwner}/${commitRepo}/compare/${parents[0].sha}...${e.source_id}`, {
                   headers: { Accept: "application/vnd.github+json", Authorization: token ? `Bearer ${token}` : undefined }
                 });
                 patch = (compareRes.data.files || []).map(f => f.patch || "").join("\n").slice(0, 10000);
-              } catch (compErr) {
-                console.warn(`[api/github/commits] Comparison failed for merge ${e.source_id.slice(0, 7)}:`, compErr.message);
+              } catch {
                 patch = (commitDetail.data.files || []).map(f => f.patch || "").join("\n").slice(0, 10000);
               }
             } else {
@@ -629,8 +653,6 @@ app.post("/api/github/commits", async (req, res) => {
 
         const aiResult = await summarizeCommit(e.comments, patch);
         console.log(`[aiService] Result for ${e.source_id.slice(0, 7)}:`, aiResult.taskTitle);
-
-        // Enrich the original object for the JSON response fallback
         e.ai_task = aiResult.taskTitle;
         e.ai_type = aiResult.type;
         entriesForExcel.push({
@@ -644,41 +666,29 @@ app.post("/api/github/commits", async (req, res) => {
         });
       }
 
-      // Load existing commits to append to them
-      console.log(`[api/github/commits] Loading existing commits from ${paths.gitCommitsXlsx}`);
+      // Load existing and merge by SHA
       const existingCommits = readRows(paths.gitCommitsXlsx);
-      console.log(`[api/github/commits] Found ${existingCommits.length} existing entries.`);
-      
-      // Use a Map to ensure uniqueness by Source ID (SHA)
       const allCommitsMap = new Map();
-      
-      // 1. Add existing commits (excluding auto-generated Scrum rows)
+
       existingCommits.forEach(c => {
         const sid = c["Source ID"] || c.source_id;
         const commitMsg = c["Commit"] || c.comments || "";
-        // Skip Scrum rows as they will be re-added during normalization
-        // Also skip merge commits
         if (sid && sid !== "N/A" && c["Commit"] !== "Daily Scrum Call" && !commitMsg.toLowerCase().startsWith("merge")) {
           allCommitsMap.set(sid, c);
         }
       });
-      
-      // 2. Add new AI-enriched commits
+
       entriesForExcel.forEach(c => {
         const sid = c["Source ID"] || c.source_id;
-        if (sid) {
-          allCommitsMap.set(sid, c);
-        }
+        if (sid) allCommitsMap.set(sid, c);
       });
-      
+
       const mergedCommits = Array.from(allCommitsMap.values());
       mergedCommits.sort((a, b) => new Date(a.Date || a.date) - new Date(b.Date || b.date));
-      
-      // 3. Re-normalize everything to maintain 8h/day rule
       finalEntriesForExcel = normalizeDailyEffort(mergedCommits);
 
       writeRows(paths.gitCommitsXlsx, finalEntriesForExcel, COMMIT_EXCEL_HEADERS, "Commits");
-      console.log(`[api/github/commits] Successfully merged and saved ${finalEntriesForExcel.length} commits (including ${entriesForExcel.length} new) to ${paths.gitCommitsXlsx}`);
+      console.log(`[api/github/commits] Saved ${finalEntriesForExcel.length} entries (${entriesForExcel.length} new across ${repoList.length} repo(s)) to ${paths.gitCommitsXlsx}`);
     } catch (saveErr) {
       console.error(`[api/github/commits] Failed to save commits excel:`, saveErr.message);
     }
@@ -692,11 +702,12 @@ app.post("/api/github/commits", async (req, res) => {
         ai_task: e["Activity Description"] || e["AI Task"] || e.ai_task,
         hours: e.Effort || e.hours,
         type: e.Type || e.type
-      })) : filteredEntries,
-      commits: commitNames,
+      })) : allFilteredEntries,
+      commits: allCommitNames,
       fromDate: normalizedFrom,
       toDate: normalizedTo,
-      total: finalEntriesForExcel.length > 0 ? finalEntriesForExcel.length : filteredEntries.length
+      repos: repoList.map(r => `${r.owner}/${r.repo}`),
+      total: finalEntriesForExcel.length > 0 ? finalEntriesForExcel.length : allFilteredEntries.length
     });
   } catch (error) {
     const ghStatus = error.response?.status || "";
@@ -904,8 +915,8 @@ app.post("/api/redmine/upload-apu", async (req, res) => {
     }
 
     const workbook = XLSX.readFile(paths.apuXlsx);
-    // Try the expected sheet name first, fall back to the first sheet
-    let sheet = workbook.Sheets["apu_tracking_redmine"];
+    // Try Activities sheet first, then apu_tracking_redmine, then first sheet
+    let sheet = workbook.Sheets["Activities"] || workbook.Sheets["apu_tracking_redmine"];
     if (!sheet) {
       sheet = workbook.Sheets[workbook.SheetNames[0]];
     }
@@ -914,18 +925,29 @@ app.post("/api/redmine/upload-apu", async (req, res) => {
       return res.status(404).json({ error: "No readable sheet found in APU file." });
     }
 
-    const rawRows = XLSX.utils.sheet_to_json(sheet);
-    
-    // Always use the provided issue ID or default for APU uploads
-    const targetIssueId = 159210;
+    const rawRows = XLSX.utils.sheet_to_json(sheet, { raw: true });
 
     // Map APU columns to Redmine entry format
-    const rowsToUpload = rawRows.map(row => ({
-      date: row["Activity Date"],
-      issue_id: targetIssueId,
-      hours: row["Time Spent(In Hours)"],
-      comments: row["Activity Description"] || "APU Log"
-    })).filter(r => r.date && r.issue_id && r.hours);
+    const rowsToUpload = rawRows.map(row => {
+      // Parse date — could be Excel serial number or ISO string
+      let dateVal = row["Activity Date"];
+      if (typeof dateVal === "number") {
+        dateVal = normalizeExcelDate(dateVal);
+      } else {
+        dateVal = toDateOnly(dateVal);
+      }
+
+      // Extract issue ID from CR-DM-PDM ID (e.g. "CR-40884" → 40884)
+      let issueId = String(row["CR-DM-PDM ID"] || "").replace(/^CR-/i, "").trim();
+      issueId = Number(issueId) || DEFAULT_ISSUE_ID;
+
+      return {
+        date: dateVal,
+        issue_id: issueId,
+        hours: Number(row["Time Spent(In Hours)"]) || 0,
+        comments: row["Activity Description"] || "APU Log"
+      };
+    }).filter(r => r.date && r.hours > 0);
 
     if (rowsToUpload.length === 0) {
       return res.status(400).json({ error: "No valid entries found in APU sheet to upload." });
@@ -977,29 +999,124 @@ app.post("/api/excel/generate-apu", (req, res) => {
   const paths = getUserPaths(userId);
 
   try {
-    if (!fs.existsSync(paths.timelogXlsx)) {
-      return res.status(400).json({ error: "Timelog file not found. Generate it first." });
+    // Read git commits as the source
+    if (!fs.existsSync(paths.gitCommitsXlsx)) {
+      return res.status(400).json({ error: "Git commits file not found. Please sync commits first." });
     }
 
-    const timelogWb = XLSX.readFile(paths.timelogXlsx);
-    const timelogData = XLSX.utils.sheet_to_json(timelogWb.Sheets[timelogWb.SheetNames[0]]);
+    const commitsWb = XLSX.readFile(paths.gitCommitsXlsx);
+    const commitsSheet = commitsWb.Sheets[commitsWb.SheetNames[0]];
+    const allCommits = XLSX.utils.sheet_to_json(commitsSheet, { raw: true });
 
-    const apuRows = timelogData.map((row, index) => {
-      // Map to the 9 Columns exactly
-      return {
-        "S No": index + 1,
-        "Resource Name": "", // Placeholder for user
-        "Resource ID": "",   // Placeholder for user
-        "Activity Date": normalizeExcelDate(row.Date || row.date),
-        "CR-DM-PDM ID": row["CR-DM-PDM ID"] || row.issue_id || "",
-        "Role": "",          // Placeholder for user
-        "Activity Name": row.Type || (String(row["Activity Description"] || row.comments).includes("Daily Scrum") ? "Daily SCRUM" : "Development & Configuration"),
-        "Time Spent(In Hours)": row.Effort || row.hours || 0,
-        "Activity Description": row["Activity Description"] || row.comments || ""
-      };
-    });
+    // Pull Resource Name/ID/Role from the template if it exists
+    let resourceName = "Shubham Kumar";
+    let resourceId = 30010335;
+    let role = "Developer";
+    if (fs.existsSync(TEMPLATE_APU)) {
+      try {
+        const tmplWb = XLSX.readFile(TEMPLATE_APU);
+        const tmplSheet = tmplWb.Sheets[tmplWb.SheetNames[0]];
+        const tmplRows = XLSX.utils.sheet_to_json(tmplSheet, { raw: true });
+        if (tmplRows.length > 0) {
+          resourceName = tmplRows[0]["Resource Name"] || resourceName;
+          resourceId   = tmplRows[0]["Resource ID"]   || resourceId;
+          role         = tmplRows[0]["Role"]           || role;
+        }
+      } catch (_) { /* keep defaults */ }
+    }
 
-    // If template exists, use it to preserve potential styles/other sheets
+    // Helper: convert "YYYY-MM-DD" → Excel serial number (same format as template)
+    function isoToExcelSerial(iso) {
+      const d = new Date(iso + "T00:00:00Z");
+      if (isNaN(d.getTime())) return null;
+      // Excel epoch is 1899-12-30
+      return Math.round((d.getTime() / 86400000) + 25569);
+    }
+
+    // Helper: is the date a weekend?
+    function isWeekend(iso) {
+      const d = new Date(iso + "T00:00:00Z");
+      const day = d.getUTCDay(); // 0=Sun, 6=Sat
+      return day === 0 || day === 6;
+    }
+
+    // Group non-merge, non-scrum commits by date — skip weekends
+    const byDate = {};
+    for (const c of allCommits) {
+      const dateRaw = c["Date"] || c.date || "";
+      const iso = normalizeExcelDate(dateRaw) || toDateOnly(dateRaw);
+      if (!iso) continue;
+      if (isWeekend(iso)) continue;
+
+      const msg = String(c["Commit"] || c.comments || "");
+      if (msg.toLowerCase().startsWith("merge")) continue;
+      if (msg === "Daily Scrum Call") continue; // we re-add scrum ourselves
+
+      if (!byDate[iso]) byDate[iso] = [];
+      byDate[iso].push({
+        description: String(c["Activity Description"] || c["AI Task"] || msg).trim(),
+        issueId: c["CR-DM-PDM ID"] || c.issue_id || ""
+      });
+    }
+
+    const sortedDates = Object.keys(byDate).sort();
+    const apuRows = [];
+    let sno = 1;
+
+    for (const iso of sortedDates) {
+      const serial = isoToExcelSerial(iso);
+      const dayCommits = byDate[iso];
+
+      // Determine CR-DM-PDM ID for this day (take the first commit's issue_id)
+      let crId = String(dayCommits[0]?.issueId || "").trim();
+      // Format as CR-XXXXX if it's a plain number
+      if (/^\d+$/.test(crId)) crId = `CR-${crId}`;
+      if (!crId) crId = "";
+
+      // 1) Daily Scrum row — always 1 hour
+      apuRows.push({
+        "S No": sno++,
+        "Resource Name": resourceName,
+        "Resource ID": resourceId,
+        "Activity Date": serial,
+        "CR-DM-PDM ID": crId,
+        "Role": role,
+        "Activity Name": "Daily SCRUM",
+        "Time Spent(In Hours)": 1,
+        "Activity Description": "Daily Scrum Call",
+        "Remarks": ""
+      });
+
+      // 2) Development commits — share 8 hours for the day
+      const devHours = 8;
+      const count = dayCommits.length;
+
+      for (let i = 0; i < count; i++) {
+        // Distribute evenly as whole integers, minimum 1 hour per task
+        let hours;
+        const base = Math.max(1, Math.floor(devHours / count));
+        if (i === count - 1) {
+          hours = Math.max(1, devHours - base * (count - 1));
+        } else {
+          hours = base;
+        }
+
+        apuRows.push({
+          "S No": sno++,
+          "Resource Name": resourceName,
+          "Resource ID": resourceId,
+          "Activity Date": serial,
+          "CR-DM-PDM ID": crId,
+          "Role": role,
+          "Activity Name": "Development & Configuration",
+          "Time Spent(In Hours)": hours,
+          "Activity Description": dayCommits[i].description,
+          "Remarks": ""
+        });
+      }
+    }
+
+    // Build workbook — use template to preserve Master sheet if present
     let workbook;
     if (fs.existsSync(TEMPLATE_APU)) {
       workbook = XLSX.readFile(TEMPLATE_APU);
@@ -1007,30 +1124,43 @@ app.post("/api/excel/generate-apu", (req, res) => {
       workbook = XLSX.utils.book_new();
     }
 
-    const newSheet = XLSX.utils.json_to_sheet(apuRows);
+    const newSheet = XLSX.utils.json_to_sheet(apuRows, {
+      header: ["S No","Resource Name","Resource ID","Activity Date","CR-DM-PDM ID","Role","Activity Name","Time Spent(In Hours)","Activity Description","Remarks"]
+    });
 
-    // Set column widths for "9-column design"
+    // Apply date format to Activity Date column (column D = index 3)
+    const dateFormat = "DD-MMM-YYYY"; // same display as template (Excel will render serial)
+    const range = XLSX.utils.decode_range(newSheet["!ref"]);
+    for (let row = range.s.r + 1; row <= range.e.r; row++) {
+      const cellAddr = XLSX.utils.encode_cell({ r: row, c: 3 });
+      if (newSheet[cellAddr] && typeof newSheet[cellAddr].v === "number") {
+        newSheet[cellAddr].t = "n";
+        newSheet[cellAddr].z = dateFormat;
+      }
+    }
+
     newSheet["!cols"] = [
       { wch: 6 },  // S No
       { wch: 20 }, // Resource Name
       { wch: 15 }, // Resource ID
       { wch: 15 }, // Activity Date
       { wch: 20 }, // CR-DM-PDM ID
-      { wch: 15 }, // Role
+      { wch: 12 }, // Role
       { wch: 30 }, // Activity Name
-      { wch: 20 }, // Time Spent
-      { wch: 80 }  // Activity Description
+      { wch: 22 }, // Time Spent
+      { wch: 80 }, // Activity Description
+      { wch: 15 }  // Remarks
     ];
 
-    const sheetName = "apu_tracking_redmine";
+    const sheetName = "Activities";
     workbook.Sheets[sheetName] = newSheet;
     if (!workbook.SheetNames.includes(sheetName)) {
-      workbook.SheetNames.push(sheetName);
+      workbook.SheetNames.unshift(sheetName);
     }
 
     XLSX.writeFile(workbook, paths.apuXlsx);
 
-    return res.json({ success: true, message: "APU Tracking Sheet generated with design preservation.", rows: apuRows.length });
+    return res.json({ success: true, message: `APU Tracking Sheet generated with ${apuRows.length} rows (${sortedDates.length} working days).`, rows: apuRows.length });
   } catch (error) {
     return res.status(500).json({ error: error.message || "APU Generation failed." });
   }
