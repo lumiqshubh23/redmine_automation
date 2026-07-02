@@ -99,10 +99,20 @@ export default function App() {
       }
     }
     loadDefaults();
-    handleClearWorkspace(false); // Clear backend workspace on refresh
   }, []);
 
+  // Auto-save edited rows to Excel in the background
+  useEffect(() => {
+    if (excelPreview && excelPreview.rows.length > 0) {
+      const timer = setTimeout(() => {
+        handleUpdateExcel(true); // Silent update
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [excelPreview?.rows]);
+
   function setField(key, value) {
+    console.log(`[setField] key=${key}, value=${value}`);
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
@@ -355,7 +365,8 @@ export default function App() {
             },
             body: JSON.stringify({
               redmineUrl: redmine.url,
-              redmineApiKey: redmine.apiKey
+              redmineApiKey: redmine.apiKey,
+              rows: excelPreview.rows
             }),
           });
           const data = await res.json();
@@ -371,6 +382,48 @@ export default function App() {
         } catch (error) {
           setMessage(error.message || "Redmine upload failed.", true);
           setStatus({ text: "Upload Error", error: true, loading: false });
+        }
+      }
+    });
+  }
+
+  async function handleUploadApuRedmine() {
+    setConfirmModal({
+      title: "Confirm APU Redmine Upload",
+      message: `You are about to push all entries from the 'apu_tracking_redmine' sheet to Redmine.`,
+      confirmText: "Push APU to Redmine",
+      confirmClass: "success",
+      onConfirm: async () => {
+        setConfirmModal(null);
+        setMessage("Initializing APU Upload...", false, true);
+        setStatus({ text: "Logging APU to Redmine...", error: false, loading: true });
+        
+        try {
+          const res = await fetch(`${API_BASE}/api/redmine/upload-apu`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-user-id": getUserId()
+            },
+            body: JSON.stringify({
+              redmineUrl: redmine.url,
+              redmineApiKey: redmine.apiKey,
+              issueId: form.issueId
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            setMessage(data.error || "Could not upload APU logs.", true);
+            setStatus({ text: "APU Upload Failed", error: true, loading: false });
+            return;
+          }
+
+          setMessage(`Success! Logged ${data.success} APU entries. Workspace cleared.`);
+          setStatus({ text: "APU Upload Complete", error: false, loading: false });
+          await handleClearWorkspace(false); 
+        } catch (error) {
+          setMessage(error.message || "APU upload failed.", true);
+          setStatus({ text: "APU Upload Error", error: true, loading: false });
         }
       }
     });
@@ -436,9 +489,9 @@ export default function App() {
     }
   }
 
-  async function handleUpdateExcel() {
+  async function handleUpdateExcel(silent = false) {
     if (!excelPreview || excelPreview.rows.length === 0) return;
-    setMessage(`Updating ${excelPreview.which} sheet...`, false, true);
+    if (!silent) setMessage(`Updating ${excelPreview.which} sheet...`, false, true);
     try {
       const res = await fetch(`${API_BASE}/api/excel/update`, {
         method: "POST",
@@ -652,6 +705,11 @@ export default function App() {
             <button className="primary" onClick={handleGenerateApu}>
               <Download size={18} /> Create & Download APU
             </button>
+            {redmine.connected && (
+              <button className="success" onClick={handleUploadApuRedmine}>
+                <Upload size={18} /> Push APU to Redmine
+              </button>
+            )}
           </div>
 
           <AnimatePresence>

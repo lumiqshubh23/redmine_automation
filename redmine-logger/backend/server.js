@@ -605,7 +605,23 @@ app.post("/api/github/commits", async (req, res) => {
             const commitDetail = await axios.get(`https://api.github.com/repos/${owner}/${repo}/commits/${e.source_id}`, {
               headers: { Accept: "application/vnd.github+json", Authorization: token ? `Bearer ${token}` : undefined }
             });
-            patch = (commitDetail.data.files || []).map(f => f.patch || "").join("\n").slice(0, 5000); // Limit context size
+
+            const parents = commitDetail.data.parents || [];
+            if (parents.length > 1) {
+              // It's a merge commit. Fetch the actual changes by comparing with the first parent.
+              console.log(`[api/github/commits] ${e.source_id.slice(0, 7)} is a merge. Fetching comparison with ${parents[0].sha.slice(0, 7)}...`);
+              try {
+                const compareRes = await axios.get(`https://api.github.com/repos/${owner}/${repo}/compare/${parents[0].sha}...${e.source_id}`, {
+                  headers: { Accept: "application/vnd.github+json", Authorization: token ? `Bearer ${token}` : undefined }
+                });
+                patch = (compareRes.data.files || []).map(f => f.patch || "").join("\n").slice(0, 10000);
+              } catch (compErr) {
+                console.warn(`[api/github/commits] Comparison failed for merge ${e.source_id.slice(0, 7)}:`, compErr.message);
+                patch = (commitDetail.data.files || []).map(f => f.patch || "").join("\n").slice(0, 10000);
+              }
+            } else {
+              patch = (commitDetail.data.files || []).map(f => f.patch || "").join("\n").slice(0, 10000);
+            }
           }
         } catch (detailErr) {
           console.warn(`[api/github/commits] Could not fetch patch for ${e.source_id}:`, detailErr.message);
@@ -628,11 +644,39 @@ app.post("/api/github/commits", async (req, res) => {
         });
       }
 
-      entriesForExcel.sort((a, b) => new Date(a.Date) - new Date(b.Date));
-      finalEntriesForExcel = normalizeDailyEffort(entriesForExcel);
+      // Load existing commits to append to them
+      console.log(`[api/github/commits] Loading existing commits from ${paths.gitCommitsXlsx}`);
+      const existingCommits = readRows(paths.gitCommitsXlsx);
+      console.log(`[api/github/commits] Found ${existingCommits.length} existing entries.`);
+      
+      // Use a Map to ensure uniqueness by Source ID (SHA)
+      const allCommitsMap = new Map();
+      
+      // 1. Add existing commits (excluding auto-generated Scrum rows)
+      existingCommits.forEach(c => {
+        const sid = c["Source ID"] || c.source_id;
+        // Skip Scrum rows as they will be re-added during normalization
+        if (sid && sid !== "N/A" && c["Commit"] !== "Daily Scrum Call") {
+          allCommitsMap.set(sid, c);
+        }
+      });
+      
+      // 2. Add new AI-enriched commits
+      entriesForExcel.forEach(c => {
+        const sid = c["Source ID"] || c.source_id;
+        if (sid) {
+          allCommitsMap.set(sid, c);
+        }
+      });
+      
+      const mergedCommits = Array.from(allCommitsMap.values());
+      mergedCommits.sort((a, b) => new Date(a.Date || a.date) - new Date(b.Date || b.date));
+      
+      // 3. Re-normalize everything to maintain 8h/day rule
+      finalEntriesForExcel = normalizeDailyEffort(mergedCommits);
 
       writeRows(paths.gitCommitsXlsx, finalEntriesForExcel, COMMIT_EXCEL_HEADERS, "Commits");
-      console.log(`[api/github/commits] Saved ${finalEntriesForExcel.length} (normalized from ${entries.length}) commits to ${paths.gitCommitsXlsx}`);
+      console.log(`[api/github/commits] Successfully merged and saved ${finalEntriesForExcel.length} commits (including ${entriesForExcel.length} new) to ${paths.gitCommitsXlsx}`);
     } catch (saveErr) {
       console.error(`[api/github/commits] Failed to save commits excel:`, saveErr.message);
     }
@@ -814,13 +858,20 @@ app.post("/api/redmine/upload", async (req, res) => {
   const sourcePath = paths.timelogXlsx;
 
   try {
-    const workbook = XLSX.readFile(sourcePath);
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(sheet);
+    let rowsToUpload = req.body.rows;
+    
+    if (!rowsToUpload) {
+      if (!fs.existsSync(sourcePath)) {
+        return res.status(404).json({ error: "Source Excel file not found and no rows provided." });
+      }
+      const workbook = XLSX.readFile(sourcePath);
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      rowsToUpload = XLSX.utils.sheet_to_json(sheet);
+    }
 
     const result = await uploadTimeEntriesToRedmine({
-      rows: data,
+      rows: rowsToUpload,
       redmineUrl: req.body.redmineUrl || REDMINE_URL,
       apiKey: req.body.redmineApiKey || apiKey || REDMINE_API_KEY,
       delayMs: Number(delayMs),
@@ -834,11 +885,69 @@ app.post("/api/redmine/upload", async (req, res) => {
   }
 });
 
+app.post("/api/redmine/upload-apu", async (req, res) => {
+  const { delayMs = 500, apiKey } = req.body || {};
+  const userId = req.headers["x-user-id"] || "global";
+  const paths = getUserPaths(userId);
+
+  try {
+    if (!fs.existsSync(paths.apuXlsx)) {
+      return res.status(404).json({ error: "APU Tracking file not found. Generate it first." });
+    }
+
+    const workbook = XLSX.readFile(paths.apuXlsx);
+    // Try the expected sheet name first, fall back to the first sheet
+    let sheet = workbook.Sheets["apu_tracking_redmine"];
+    if (!sheet) {
+      sheet = workbook.Sheets[workbook.SheetNames[0]];
+    }
+    
+    if (!sheet) {
+      return res.status(404).json({ error: "No readable sheet found in APU file." });
+    }
+
+    const rawRows = XLSX.utils.sheet_to_json(sheet);
+    
+    // Always use the provided issue ID or default for APU uploads
+    const targetIssueId = 159210;
+
+    // Map APU columns to Redmine entry format
+    const rowsToUpload = rawRows.map(row => ({
+      date: row["Activity Date"],
+      issue_id: targetIssueId,
+      hours: row["Time Spent(In Hours)"],
+      comments: row["Activity Description"] || "APU Log"
+    })).filter(r => r.date && r.issue_id && r.hours);
+
+    if (rowsToUpload.length === 0) {
+      return res.status(400).json({ error: "No valid entries found in APU sheet to upload." });
+    }
+
+    const result = await uploadTimeEntriesToRedmine({
+      rows: rowsToUpload,
+      redmineUrl: req.body.redmineUrl || REDMINE_URL,
+      apiKey: req.body.redmineApiKey || apiKey || REDMINE_API_KEY,
+      delayMs: Number(delayMs),
+    });
+
+    return res.json({
+      ...result,
+      totalProcessed: rowsToUpload.length
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "APU Upload failed." });
+  }
+});
+
+
 app.post("/api/excel/update", (req, res) => {
   const { which, rows } = req.body || {};
   const userId = req.headers["x-user-id"] || "global";
   const paths = getUserPaths(userId);
-  const filePath = which === "timelog" ? paths.timelogXlsx : paths.inputXlsx;
+  let filePath;
+  if (which === "timelog") filePath = paths.timelogXlsx;
+  else if (which === "commits") filePath = paths.gitCommitsXlsx;
+  else filePath = paths.inputXlsx;
 
   if (!Array.isArray(rows)) {
     return res.status(400).json({ error: "rows must be an array." });
@@ -905,7 +1014,7 @@ app.post("/api/excel/generate-apu", (req, res) => {
       { wch: 80 }  // Activity Description
     ];
 
-    const sheetName = workbook.SheetNames[0] || "Sheet1";
+    const sheetName = "apu_tracking_redmine";
     workbook.Sheets[sheetName] = newSheet;
     if (!workbook.SheetNames.includes(sheetName)) {
       workbook.SheetNames.push(sheetName);
